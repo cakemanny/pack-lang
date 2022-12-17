@@ -11,6 +11,8 @@ def test_read_ident():
     assert read_ident('a') == (Ident('a'), '')
     assert read_ident('z') == (Ident('z'), '')
     assert read_ident('hi ') == (Ident('hi'), ' ')
+    assert read_ident('h9 ') == (Ident('h9'), ' ')
+    assert read_ident('🫣🫒 😈') == (Ident('🫣🫒'), ' 😈')
 
 
 def test_read_num():
@@ -52,6 +54,9 @@ def test_try_read():
     with pytest.raises(SyntaxError) as exc_info:
         try_read('{ 1 }')
     assert 'even number of forms' in str(exc_info.value)
+
+    assert try_read('-1')[0] == Num('-1')
+    assert try_read('+1')[0] == Num('+1')
 
 
 def test_try_read__reader_macros():

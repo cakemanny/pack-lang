@@ -55,24 +55,36 @@ class Hash:
         ) + '}'
 
 
+def is_ident_start(c):
+    return (
+        'a' <= c <= 'z'
+        or c in ('+', '-', '*', '/', '<', '>', '!', '=', '&', '^')
+        or '🌀' <= c <= '🫸'
+    )
+
+
+def is_ident(c):
+    return is_ident_start(c) or '0' <= c <= '9'
+
+
 def read_ident(text):
     i = 0
     for c in text:
-        if 'a' <= c <= 'z':
+        if is_ident(c):
             i += 1
         else:
             break
     return Ident(text[:i]), text[i:]
 
 
-def read_num(text):
+def read_num(text, prefix=''):
     i = 0
     for c in text:
         if '0' <= c <= '9':
             i += 1
         else:
             break
-    return Num(text[:i]), text[i:]
+    return Num(prefix + text[:i]), text[i:]
 
 
 def take_pairs(xs):
@@ -149,18 +161,28 @@ def try_read(text):
 
     closer = {'(': ')', '[': ']', '{': '}'}
 
+    c1 = text[1] if text[1:] else ''
+
     match c:
         case '(' | '[' | '{':
             return read_list(c, text[1:], closer[c])
+        case ')' | ']' | '}':
+            raise Unmatched(c, text[1:])
         case "'":
             # quote next form
             return read_quoted(text[1:])
-        case s if 'a' <= s <= 'z':
-            return read_ident(text)
+        case '-' | '+' if '0' <= c1 <= '9':
+            return read_num(text[1:], c)
         case n if '0' <= n <= '9':
             return read_num(text)
-        case ')' | ']' | '}':
-            raise Unmatched(c, text[1:])
+        case '"':
+            # TODO: strings
+            raise NotImplementedError(c)
+        case '\\':
+            # TODO characters
+            raise NotImplementedError(c)
+        case s if is_ident(s):
+            return read_ident(text)
 
     raise NotImplementedError(c)
 
