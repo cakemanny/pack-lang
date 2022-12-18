@@ -5,7 +5,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import islice
-from typing import Any
+from typing import Any, Optional
 
 
 # -------------
@@ -16,15 +16,18 @@ from typing import Any
 WHITESPACE = (' ', '\n', '\t', '\v')
 
 
-@dataclass
-class Ident:
-    i: str
+@dataclass(frozen=True)
+class Sym:
+    ns: Optional[str]
+    n: str
 
     def __str__(self):
-        return self.i
+        if self.ns:
+            return self.ns + '/' + self.n
+        return self.n
 
 
-@dataclass
+@dataclass(frozen=True)
 class Num:
     n: str
 
@@ -32,7 +35,7 @@ class Num:
         return self.n
 
 
-@dataclass
+@dataclass(frozen=True)
 class List:
     xs: tuple
 
@@ -118,7 +121,7 @@ class Vec(Sequence):
         ))) + ']'
 
 
-@dataclass
+@dataclass(frozen=True)
 class Map:
     xs: tuple[tuple]
 
@@ -131,13 +134,23 @@ class Map:
 def is_ident_start(c):
     return (
         'a' <= c <= 'z'
-        or c in ('+', '-', '*', '/', '<', '>', '!', '=', '&', '^')
+        or c in ('+', '-', '*', '/', '<', '>', '!', '=', '&', '^', '.')
         or '🌀' <= c <= '🫸'
     )
 
 
 def is_ident(c):
     return is_ident_start(c) or '0' <= c <= '9'
+
+
+def split_ident(n):
+    if '/' in n[:-1]:
+        match n.split('/', 1):
+            case [ns, n]:
+                return ns, n
+            case [n]:
+                return None, n
+    return None, n
 
 
 def read_ident(text):
@@ -147,7 +160,8 @@ def read_ident(text):
             i += 1
         else:
             break
-    return Ident(text[:i]), text[i:]
+
+    return Sym(*split_ident(text[:i])), text[i:]
 
 
 def read_num(text, prefix=''):
@@ -160,7 +174,19 @@ def read_num(text, prefix=''):
     return Num(prefix + text[:i]), text[i:]
 
 
+def read_comment(text):
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == '\n':
+            i += 1
+            break
+        i += 1
+    return None, text[i:]
+
+
 def take_pairs(xs):
+    "yield pairs from an even length iterable: ABCDEF -> AB CD EF"
     i = 0
     a = None
     for x in xs:
@@ -174,6 +200,22 @@ def take_pairs(xs):
         raise ValueError('odd length input')
 
 
+def close_sequence(opener, elements):
+    match opener:
+        case '(':
+            return List(tuple(elements))
+        case '[':
+            return Vec(elements)
+        case '{':
+            try:
+                return Map(tuple(take_pairs(elements)))
+            except ValueError:
+                raise SyntaxError(
+                    'A map literal must contain an even number of forms'
+                ) from None
+    raise ValueError('unknown opener', opener)
+
+
 def read_list(opener, text, closing):
     elements = []
     while True:
@@ -184,19 +226,7 @@ def read_list(opener, text, closing):
             elements.append(elem)
         except Unmatched as e:
             if e.args[0] == closing:
-                if opener == '(':
-                    return List(tuple(elements)), e.args[1]
-                if opener == '[':
-                    return Vec(elements), e.args[1]
-                if opener == '{':
-                    try:
-                        return Map(tuple(take_pairs(elements))), e.args[1]
-                    except ValueError:
-                        raise SyntaxError(
-                            'A map literal must contain an even number of'
-                            ' forms'
-                        ) from None
-
+                return close_sequence(opener, elements), e.args[1]
             raise
 
 
@@ -204,7 +234,7 @@ def read_quoted(text):
     to_quote, remaining = try_read(text)
     if to_quote is None:
         raise Unclosed("'", remaining)
-    return List((Ident('quote'), to_quote)), remaining
+    return List((Sym(None, 'quote'), to_quote)), remaining
 
 
 class SyntaxError(Exception):
@@ -251,67 +281,109 @@ def try_read(text):
         case '"':
             # TODO: strings
             raise NotImplementedError(c)
+        case ';':
+            return read_comment(text)
         case '\\':
             # TODO characters
             raise NotImplementedError(c)
+
         case s if is_ident(s):
             return read_ident(text)
 
     raise NotImplementedError(c)
 
 
-def read_forms(previous_lines='', input=input, forms=tuple()):
+def read_all_forms(text):
+    remaining = text
+    forms = []
+    while True:
+        match try_read(remaining):
+            case None, '':
+                break
+            case None, remaining:
+                continue
+            case form, remaining:
+                forms.append(form)
+    return tuple(forms)
 
-    line = input('=> ' if not previous_lines else '')
+
+def read_forms(previous_lines='', input=input, prompt='=> '):
+
+    line = input(prompt if not previous_lines else '')
+
+    remaining = previous_lines + '\n' + line
     try:
-        form, remaining = try_read(previous_lines + '\n' + line)
+        return read_all_forms(remaining)
     except Unclosed:
-        return read_forms(previous_lines + '\n' + line, input, forms)
-
-    if form is not None:
-        forms = forms + (form,)
-    while remaining:
-        try:
-            form, remaining = try_read(remaining)
-            if form is not None:
-                forms = forms + (form,)
-        except Unclosed:
-            return read_forms(remaining, input, forms)
-    return forms
+        return read_forms(remaining, input, prompt)
 
 
 # -------------
 #  Interpreter
 # -------------
 
+class SemanticError(Exception):
+    pass
 
-class Package:
+
+class Namespace:
     def __init__(self, name, parent=None):
         self.name = name
         self.parent = parent
-
-        self.values = {}
+        self.defs = {}
 
 
 class Interpreter:
     def __init__(self):
-        self.packages = []
-        self.package = None
+        self.namespaces = {}
+        self.current_ns = None
+
+    def switch_namespace(self, name):
+        if name not in self.namespaces:
+            ns = Namespace(name)
+        self.current_ns = ns
 
 
 def expand_and_evaluate_forms(forms, interpreter):
     # TODO: macro expand
-    expanded_forms = forms
+
+    # Expands forms...
+    for form in forms:
+        match form:
+            case List((Sym(None, 'ns'), Sym(None, name), *_)):
+                interpreter.switch_namespace(name)
+            case List((Sym(None, 'ns'), *_)):
+                raise SemanticError('ns expects a symbol as argument')
+            case List((Sym(None, 'def'), Sym(None, name), *args)):
+                interpreter.current_ns.defs[name] = {
+                    'form': args
+                }
+            case List((Sym(None, 'def'), Sym(_, name), *args)):
+                # TODO
+                pass
+            case List((Sym('def'), *_)):
+                raise SemanticError('def expects a symbol as argument')
+            case other:
+                raise NotImplementedError(other)
+
+    # TODO: Evaluate forms
 
 
 def main():
 
     interpreter = Interpreter()
 
+    with open('core.pack') as f:
+        forms = read_all_forms(f.read())
+    expand_and_evaluate_forms(forms, interpreter)
+
+    interpreter.switch_namespace('user')
+
     if os.isatty(sys.stdin.fileno()):
+
         while True:
             try:
-                forms = read_forms()
+                forms = read_forms(prompt=interpreter.current_ns.name + '=> ')
             except EOFError:
                 print()
                 exit(0)
@@ -319,14 +391,14 @@ def main():
             for form in forms:
                 print(form)
 
-        expand_and_evaluate_forms(forms, interpreter)
+            try:
+                expand_and_evaluate_forms(forms, interpreter)
+            except NotImplementedError as e:
+                print(repr(e))
 
     else:
 
-        def _input(prompt):
-            return sys.stdin.read()
-
-        forms = read_forms(input=_input)
+        forms = read_all_forms(sys.stdin.read())
         for form in forms:
             print(form)
 

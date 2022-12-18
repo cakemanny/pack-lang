@@ -1,18 +1,22 @@
 import pytest
 
-from interp import try_read, read_ident, read_num, read_forms
+from interp import try_read, read_ident, read_num, read_forms, read_all_forms
 from interp import Unmatched, SyntaxError, Unclosed
-from interp import Num, Ident, List, Vec, Map
+from interp import Num, Sym, List, Vec, Map
 
 NIL = tuple()
 
 
 def test_read_ident():
-    assert read_ident('a') == (Ident('a'), '')
-    assert read_ident('z') == (Ident('z'), '')
-    assert read_ident('hi ') == (Ident('hi'), ' ')
-    assert read_ident('h9 ') == (Ident('h9'), ' ')
-    assert read_ident('🫣🫒 😈') == (Ident('🫣🫒'), ' 😈')
+    assert read_ident('a') == (Sym(None, 'a'), '')
+    assert read_ident('z') == (Sym(None, 'z'), '')
+    assert read_ident('hi ') == (Sym(None, 'hi'), ' ')
+    assert read_ident('h9 ') == (Sym(None, 'h9'), ' ')
+    assert read_ident('🫣🫒 😈') == (Sym(None, '🫣🫒'), ' 😈')
+    assert read_ident('ns/n') == (Sym('ns', 'n'), '')
+    assert read_ident('ns//') == (Sym('ns', '/'), '')
+
+    assert read_ident('ns/') == (Sym(None, 'ns/'), '')
 
 
 def test_read_num():
@@ -58,6 +62,10 @@ def test_try_read():
 
     assert try_read('-1')[0] == Num('-1')
     assert try_read('+1')[0] == Num('+1')
+
+    assert try_read(';hi\n1') == (None, '1')
+    assert try_read(';hi\n') == (None, '')
+    assert try_read(';hi') == (None, '')
 
 
 def test_vec():
@@ -113,3 +121,22 @@ def test_read_forms(line_values, expected_forms):
     def _input(prompt=''):
         return next(lines, '')
     assert read_forms(input=_input) == expected_forms
+
+
+def test_read_all_forms__unclosed_file():
+    line_value = """\
+(ns pack.core)
+
+(def not (fn [x] (if x false true))
+
+;; vim:ft=clojure:
+"""
+
+    with pytest.raises(Unclosed):
+        assert read_all_forms(line_value) == []
+
+
+# -------------
+#  Interpreter
+# -------------
+

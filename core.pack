@@ -1,0 +1,6 @@
+(ns pack.core)
+
+(def not (fn [x] (if x false true)))
+
+;; vim:ft=clojure:
+
