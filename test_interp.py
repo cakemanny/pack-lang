@@ -2,7 +2,7 @@ import pytest
 
 from interp import try_read, read_ident, read_num, read_forms, read_all_forms
 from interp import Unmatched, SyntaxError, Unclosed
-from interp import Num, Sym, List, Vec, Map
+from interp import Num, Sym, List, Vec, ArrayMap
 
 NIL = tuple()
 
@@ -33,9 +33,9 @@ def test_try_read():
     assert try_read('[]') == (Vec(NIL), '')
     assert try_read('[  ]') == (Vec(NIL), '')
     assert try_read('[1 2 3]') == (Vec([Num('1'), Num('2'), Num('3')]), '')
-    assert try_read('{  }') == (Map(NIL), '')
+    assert try_read('{  }') == (ArrayMap.from_iter(NIL), '')
     assert try_read('{1 2 3 4 5 6}') == (
-        Map((
+        ArrayMap.from_iter((
             (Num('1'), Num('2')),
             (Num('3'), Num('4')),
             (Num('5'), Num('6'))
@@ -100,6 +100,22 @@ def test_vec_3():
     assert v[1028] == 1028
     assert v[-1] == 1029
     assert v[-2] == 1028
+
+
+def test_map():
+    m = ArrayMap.from_iter((('a', 1), ('b', 2)))
+
+    assert len(m) == 2
+    assert list(iter(m)) == ['a', 'b']
+    assert str(m) == "{'a' 1  'b' 2}"
+
+    m2 = ArrayMap.from_iter((('b', 2), ('a', 1)))
+    assert m == m2
+    assert m2 == m
+
+    m3 = ArrayMap.from_iter((('a', 1), ('b', 3)))
+    assert m != m3
+    assert m3 != m
 
 
 def test_try_read__reader_macros():

@@ -2,7 +2,7 @@
 
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Sequence, Mapping
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any, Optional
@@ -122,13 +122,55 @@ class Vec(Sequence):
 
 
 @dataclass(frozen=True)
-class Map:
-    xs: tuple[tuple]
+class ArrayMap(Mapping):
+    kvs: tuple
+
+    def __len__(self):
+        return len(self.kvs) // 2
+
+    def __iter__(self):
+        def iterate(kvs):
+            for i in range(0, len(kvs), 2):
+                yield kvs[i]
+        return iterate(self.kvs)
+
+    def __getitem__(self, k):
+        kvs = self.kvs
+        for i in range(0, len(kvs), 2):
+            if k == kvs[i]:
+                return kvs[i + 1]
+        raise KeyError(k)
+
+    def __eq__(self, o):
+        if not isinstance(o, Mapping):
+            return False
+        if len(o) != len(self):
+            return False
+        # inefficient nested loop join
+        try:
+            for k in self:
+                if self[k] != o[k]:
+                    return False
+            for k in o:
+                if self[k] != o[k]:
+                    return False
+        except KeyError:
+            return False
+        return True
 
     def __str__(self):
         return '{' + '  '.join(
-            map(lambda x: ' '.join(map(str, x)), self.xs)
+           f'{k!r} {v!r}' for (k, v) in self.items()
         ) + '}'
+
+    @classmethod
+    def from_iter(cls, it):
+        # NB: This is not dealing with duplicates currently
+        def aux():
+            for k, v in it:
+                yield k
+                yield v
+        return cls(tuple(aux()))
 
 
 def is_ident_start(c):
@@ -208,7 +250,7 @@ def close_sequence(opener, elements):
             return Vec(elements)
         case '{':
             try:
-                return Map(tuple(take_pairs(elements)))
+                return ArrayMap.from_iter(take_pairs(elements))
             except ValueError:
                 raise SyntaxError(
                     'A map literal must contain an even number of forms'
@@ -387,7 +429,10 @@ def main():
             except EOFError:
                 print()
                 exit(0)
-            # TODO: evaluate form
+            except SyntaxError as e:
+                print(repr(e))
+                continue
+
             for form in forms:
                 print(form)
 
