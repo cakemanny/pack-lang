@@ -2,7 +2,7 @@ import pytest
 
 from interp import try_read, read_ident, read_num, read_forms, read_all_forms
 from interp import Unmatched, SyntaxError, Unclosed
-from interp import Num, Sym, List, Vec, ArrayMap
+from interp import Num, Sym, List, Vec, ArrayMap, Map
 
 NIL = tuple()
 
@@ -102,7 +102,7 @@ def test_vec_3():
     assert v[-2] == 1028
 
 
-def test_map():
+def test_arraymap():
     m = ArrayMap.from_iter((('a', 1), ('b', 2)))
 
     assert len(m) == 2
@@ -116,6 +116,48 @@ def test_map():
     m3 = ArrayMap.from_iter((('a', 1), ('b', 3)))
     assert m != m3
     assert m3 != m
+
+
+def test_hamt():
+    nil = Map.empty()
+
+    assert 'a' not in nil
+    assert len(nil) == 0
+    assert list(nil) == []
+
+    m = nil.assoc('a', 1)
+    assert 'a' in m
+    assert m['a'] == 1
+    assert len(m) == 1
+    assert list(m) == ['a']
+
+    m2 = m.assoc('a', 2)
+    assert 'a' in m2
+    assert m2['a'] == 2
+    assert len(m2) == 1
+    assert list(m2) == ['a']
+
+    m3 = m.assoc('b', 2)
+    assert 'a' in m3 and 'b' in m3
+    assert m3['a'] == 1
+    assert m3['b'] == 2
+    assert len(m3) == 2
+    assert set(m3) == {'a', 'b'}
+
+
+def test_hamt_2():
+
+    m = Map.empty()
+    for i in range(0, 100):
+        m = m.assoc(i, i)
+
+    assert len(m) == 100
+
+    m = Map.empty()
+    for i in range(0, 100):
+        m = m.assoc(chr(i), i)
+
+    assert len(m) == 100
 
 
 def test_try_read__reader_macros():
@@ -155,4 +197,3 @@ def test_read_all_forms__unclosed_file():
 # -------------
 #  Interpreter
 # -------------
-

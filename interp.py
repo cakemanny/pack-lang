@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import dataclasses
 import os
 import sys
 from collections.abc import Sequence, Mapping
@@ -171,6 +172,138 @@ class ArrayMap(Mapping):
                 yield k
                 yield v
         return cls(tuple(aux()))
+
+
+@dataclass
+class Map(Mapping):
+    """
+    A HAMT Map. A Map is a 32 element tuple containing either a map entry or a
+    another map with further levels of the tree. The index is the first 5
+    bits of a 32-bit hash
+    """
+    xs: tuple
+
+    kindset: int
+    "A 32-bit bitset with 0 a map node, 1 for a map entry"
+
+    height: int
+
+    _len: int
+
+    def __post_init__(self):
+        assert self._len >= 0
+        assert self.height >= 0
+
+    def __len__(self):
+        return self._len
+
+    def __getitem__(self, k):
+        h = hash(k) & ((1 << 32) - 1)
+        return self._getitem_for_hash_and_key(h, k)
+
+    def _getitem_for_hash_and_key(self, h, k):
+
+        idx = (h >> (self.height * 5)) & 0b11111
+
+        if self._is_leaf(idx):
+            entry = self.xs[idx]
+            if entry is None or entry[0] != k:
+                raise KeyError(k)
+            return entry[1]
+
+        next_map = self.xs[idx]
+        if next_map is None:
+            raise KeyError(k)
+        return next_map._getitem_for_hash_and_key(h, k)
+
+    def __iter__(self):
+        for i, x in enumerate(self.xs):
+            if (self.kindset & (1 << i)):
+                yield x[0]
+            elif x is not None:
+                for k in x:
+                    yield k
+
+    def _hash(self, k):
+        return hash(k) & ((1 << 32) - 1)
+
+    def _is_leaf(self, idx):
+        return bool(self.kindset & (1 << idx))
+
+    def assoc(self, k, v):
+        h = self._hash(k)
+
+        idx = (h >> (self.height * 5)) & 0b11111
+        if self._is_leaf(idx):
+            entry = self.xs[idx]
+            if entry is not None and entry == (k, v):
+                return self
+            if entry is not None and entry[0] != k:
+                existing_h = self._hash(entry[0])
+                if h == existing_h:
+                    raise NotImplementedError('hash collision')
+                # If has is the same: need to append to the bucket
+                # otherwise: need to create new subnode
+
+                new_value = (
+                    dataclasses.replace(
+                        Map.empty(), height=(self.height - 1)
+                    )
+                    .assoc(entry[0], entry[1])
+                    .assoc(k, v)
+                )
+                return Map(
+                    tuple(
+                        new_value if i == idx else x
+                        for (i, x) in enumerate(self.xs)
+                    ),
+                    kindset=(self.kindset & (((1 << 32) - 1) ^ (1 << idx))),
+                    _len=(self._len + 1),
+                    height=self.height,
+                )
+
+            # This will break when we have to bucket things
+            assert entry[0] == k
+            # Replace a key
+            return Map(
+                tuple(
+                    (k, v) if i == idx else x for (i, x) in enumerate(self.xs)
+                ),
+                kindset=(self.kindset | (1 << idx)),
+                _len=self._len,
+                height=self.height,
+            )
+        next_map = self.xs[idx]
+        if next_map is None:
+            # put (k, v) as a entry in this node
+            return Map(
+                xs=tuple(
+                    (k, v) if i == idx else x for (i, x) in enumerate(self.xs)
+                ),
+                kindset=(self.kindset | (1 << idx)),
+                _len=self._len + 1,
+                height=self.height,
+            )
+        # assoc within submap and return that stuck into place in this one
+
+        new_value = next_map.assoc(k, v)
+        return Map(
+            tuple(
+                new_value if i == idx else x
+                for (i, x) in enumerate(self.xs)
+            ),
+            kindset=self.kindset,
+            _len=self._len - len(next_map) + len(new_value),
+            height=self.height,
+        )
+
+    @classmethod
+    def empty(cls):
+        if not hasattr(cls, '_empty'):
+            cls._empty = cls(
+                tuple([None] * 32), kindset=0, _len=0, height=7
+            )
+        return cls._empty
 
 
 def is_ident_start(c):
