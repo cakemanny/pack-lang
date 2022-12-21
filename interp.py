@@ -3,7 +3,7 @@
 import dataclasses
 import os
 import sys
-from collections.abc import Sequence, Mapping
+from collections.abc import Sequence, Mapping, Set, Collection
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any, Optional
@@ -130,15 +130,15 @@ class ArrayMap(Mapping):
         return len(self.kvs) // 2
 
     def __iter__(self):
-        def iterate(kvs):
-            for i in range(0, len(kvs), 2):
-                yield kvs[i]
-        return iterate(self.kvs)
-
-    def __getitem__(self, k):
         kvs = self.kvs
         for i in range(0, len(kvs), 2):
-            if k == kvs[i]:
+            yield kvs[i]
+
+    def __getitem__(self, key):
+        kvs = self.kvs
+        for i in range(0, len(kvs), 2):
+            k = kvs[i]
+            if key is k or key == k:
                 return kvs[i + 1]
         raise KeyError(k)
 
@@ -149,8 +149,8 @@ class ArrayMap(Mapping):
             return False
         # inefficient nested loop join
         try:
-            for k in self:
-                if self[k] != o[k]:
+            for k, v in self.items():
+                if v != o[k]:
                     return False
             for k in o:
                 if self[k] != o[k]:
@@ -159,10 +159,60 @@ class ArrayMap(Mapping):
             return False
         return True
 
+    def items(self):
+        kvs = self.kvs
+
+        class ItemsView(Set):
+            def __iter__(self):
+                for i in range(0, len(kvs), 2):
+                    yield (kvs[i], kvs[i + 1])
+
+            def __len__(self):
+                return len(kvs) // 2
+
+            def __contains__(self, item):
+                for i in range(0, len(kvs), 2):
+                    if item == (kvs[i], kvs[i + 1]):
+                        return True
+                return False
+
+        return ItemsView()
+
+    def values(self):
+        kvs = self.kvs
+        # Could be rewritten to return a view
+        return [kvs[i + 1] for i in range(0, len(kvs), 2)]
+
     def __str__(self):
         return '{' + '  '.join(
            f'{k!r} {v!r}' for (k, v) in self.items()
         ) + '}'
+
+    def assoc(self, key, value):
+        new_kvs = list(self.kvs)
+        for i in range(0, len(new_kvs), 2):
+            if new_kvs[i] == key:
+                if new_kvs[i + 1] is value or new_kvs[i + 1] == value:
+                    return self
+                new_kvs[i + 1] = value
+                break
+        else:
+            new_kvs.append(key)
+            new_kvs.append(value)
+        if len(new_kvs) > 16:
+            return Map.from_iter(take_pairs(new_kvs))
+        return ArrayMap(tuple(new_kvs))
+
+    def dissoc(self, key):
+        if key not in self.values():
+            return self
+        return self.from_iter(
+            (k, v) for (k, v) in self.items() if k != key
+        )
+
+    @classmethod
+    def empty(cls):
+        return cls(tuple())
 
     @classmethod
     def from_iter(cls, it):
@@ -197,14 +247,18 @@ class Map(Mapping):
     def __len__(self):
         return self._len
 
+    def _hash32(self, k):
+        return hash(k) & ((1 << 32) - 1)
+
+    def _idx_for_key(self, k):
+        h = self._hash32(k)
+        return (h >> (self.height * 5)) & 0b11111
+
+    def _is_leaf(self, idx):
+        return bool(self.kindset & (1 << idx))
+
     def __getitem__(self, k):
-        h = hash(k) & ((1 << 32) - 1)
-        return self._getitem_for_hash_and_key(h, k)
-
-    def _getitem_for_hash_and_key(self, h, k):
-
-        idx = (h >> (self.height * 5)) & 0b11111
-
+        idx = self._idx_for_key(k)
         if self._is_leaf(idx):
             entry = self.xs[idx]
             if entry is None or entry[0] != k:
@@ -214,7 +268,7 @@ class Map(Mapping):
         next_map = self.xs[idx]
         if next_map is None:
             raise KeyError(k)
-        return next_map._getitem_for_hash_and_key(h, k)
+        return next_map[k]
 
     def __iter__(self):
         for i, x in enumerate(self.xs):
@@ -224,27 +278,34 @@ class Map(Mapping):
                 for k in x:
                     yield k
 
-    def _hash(self, k):
-        return hash(k) & ((1 << 32) - 1)
+    def _kindset_setting_subnode(self, idx):
+        "copy of kindset with idx now as a subnode"
+        # clear bit idx
+        return (self.kindset & (((1 << 32) - 1) ^ (1 << idx)))
 
-    def _is_leaf(self, idx):
-        return bool(self.kindset & (1 << idx))
+    def _kindset_setting_leaf(self, idx):
+        "copy of kindset with idx now as a leaf slot (map entry)"
+        return (self.kindset | (1 << idx))
 
     def assoc(self, k, v):
-        h = self._hash(k)
+        idx = self._idx_for_key(k)
 
-        idx = (h >> (self.height * 5)) & 0b11111
+        def xs_with_replacement(new_value):
+            return tuple(
+                new_value if i == idx else x
+                for (i, x) in enumerate(self.xs)
+            )
+
         if self._is_leaf(idx):
             entry = self.xs[idx]
-            if entry is not None and entry == (k, v):
+            assert entry is not None
+            if entry == (k, v):
                 return self
-            if entry is not None and entry[0] != k:
-                existing_h = self._hash(entry[0])
-                if h == existing_h:
+            if entry[0] != k:
+                if self.height == 0:
+                    assert self._hash32(k) == self._hash32(entry[0])
                     raise NotImplementedError('hash collision')
-                # If has is the same: need to append to the bucket
-                # otherwise: need to create new subnode
-
+                # conflict, replace entry with self-node
                 new_value = (
                     dataclasses.replace(
                         Map.empty(), height=(self.height - 1)
@@ -253,11 +314,8 @@ class Map(Mapping):
                     .assoc(k, v)
                 )
                 return Map(
-                    tuple(
-                        new_value if i == idx else x
-                        for (i, x) in enumerate(self.xs)
-                    ),
-                    kindset=(self.kindset & (((1 << 32) - 1) ^ (1 << idx))),
+                    xs_with_replacement(new_value),
+                    kindset=self._kindset_setting_subnode(idx),
                     _len=(self._len + 1),
                     height=self.height,
                 )
@@ -266,34 +324,28 @@ class Map(Mapping):
             assert entry[0] == k
             # Replace a key
             return Map(
-                tuple(
-                    (k, v) if i == idx else x for (i, x) in enumerate(self.xs)
-                ),
-                kindset=(self.kindset | (1 << idx)),
+                xs_with_replacement((k, v)),
+                kindset=self.kindset,
                 _len=self._len,
                 height=self.height,
             )
-        next_map = self.xs[idx]
-        if next_map is None:
+        subnode = self.xs[idx]
+        if subnode is None:
             # put (k, v) as a entry in this node
             return Map(
-                xs=tuple(
-                    (k, v) if i == idx else x for (i, x) in enumerate(self.xs)
-                ),
-                kindset=(self.kindset | (1 << idx)),
-                _len=self._len + 1,
+                xs_with_replacement((k, v)),
+                kindset=self._kindset_setting_leaf(idx),
+                _len=(self._len + 1),
                 height=self.height,
             )
-        # assoc within submap and return that stuck into place in this one
 
-        new_value = next_map.assoc(k, v)
+        # There is a subnode
+        # assoc within submap and return that stuck into place in the one found
+        new_value = subnode.assoc(k, v)
         return Map(
-            tuple(
-                new_value if i == idx else x
-                for (i, x) in enumerate(self.xs)
-            ),
+            xs_with_replacement(new_value),
             kindset=self.kindset,
-            _len=self._len - len(next_map) + len(new_value),
+            _len=(self._len - len(subnode) + len(new_value)),
             height=self.height,
         )
 
@@ -304,6 +356,13 @@ class Map(Mapping):
                 tuple([None] * 32), kindset=0, _len=0, height=7
             )
         return cls._empty
+
+    @classmethod
+    def from_iter(self, it):
+        m = Map.empty()
+        for k, v in it:
+            m = m.assoc(k, v)
+        return m
 
 
 def is_ident_start(c):
@@ -383,7 +442,7 @@ def close_sequence(opener, elements):
             return Vec(elements)
         case '{':
             try:
-                return ArrayMap.from_iter(take_pairs(elements))
+                return Map.from_iter(take_pairs(elements))
             except ValueError:
                 raise SyntaxError(
                     'A map literal must contain an even number of forms'

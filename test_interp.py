@@ -108,6 +108,8 @@ def test_arraymap():
     assert len(m) == 2
     assert list(iter(m)) == ['a', 'b']
     assert str(m) == "{'a' 1  'b' 2}"
+    assert list(m.keys()) == ['a', 'b']
+    assert 'a' in m.keys() and 'b' in m.keys()
 
     m2 = ArrayMap.from_iter((('b', 2), ('a', 1)))
     assert m == m2
@@ -116,6 +118,26 @@ def test_arraymap():
     m3 = ArrayMap.from_iter((('a', 1), ('b', 3)))
     assert m != m3
     assert m3 != m
+    assert len(m3) == 2
+
+
+def test_arraymap_assoc():
+    m = ArrayMap.from_iter((('a', 1), ('b', 2)))
+
+    assert m.assoc('c', 3) == ArrayMap.from_iter(
+        (('a', 1), ('b', 2), ('c', 3))
+    )
+
+    assert ArrayMap.empty().assoc('a', 1).assoc('b', 2) == m
+    assert ArrayMap.empty().assoc('b', 2).assoc('a', 1) == m
+
+
+def test_arraymap_dissoc():
+    m = ArrayMap.from_iter((('a', 1), ('b', 2)))
+
+    m4 = m.dissoc('a')
+    assert len(m4) == 1
+    assert list(iter(m4)) == ['b']
 
 
 def test_hamt():
@@ -152,12 +174,16 @@ def test_hamt_2():
         m = m.assoc(i, i)
 
     assert len(m) == 100
+    for i in range(0, 100):
+        assert m[i] == i
 
     m = Map.empty()
     for i in range(0, 100):
         m = m.assoc(chr(i), i)
 
     assert len(m) == 100
+    for i in range(0, 100):
+        assert m[chr(i)] == i
 
 
 def test_try_read__reader_macros():
