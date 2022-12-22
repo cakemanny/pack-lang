@@ -224,7 +224,7 @@ class ArrayMap(Mapping):
         return cls(tuple(aux()))
 
 
-@dataclass
+@dataclass(frozen=True)
 class Map(Mapping):
     """
     A HAMT Map. A Map is a 32 element tuple containing either a map entry or a
@@ -287,14 +287,36 @@ class Map(Mapping):
         "copy of kindset with idx now as a leaf slot (map entry)"
         return (self.kindset | (1 << idx))
 
+    def _with_replacement(self, idx, new_value, *, leaf: bool):
+        "return a new map with a single item in the xs tuple replaced"
+        if leaf:
+            (k, v) = new_value  # assertion
+
+        new_xs = tuple(
+            new_value if i == idx else x
+            for (i, x) in enumerate(self.xs)
+        )
+        new_kindset = (
+            self._kindset_setting_leaf(idx) if leaf
+            else self._kindset_setting_subnode(idx)
+        )
+
+        len_of_replaced = (
+            1 if self._is_leaf(idx)
+            else len(node) if (node := self.xs[idx]) is not None
+            else 0
+        )
+        len_of_replacement = (
+            1 if leaf
+            else len(new_value) if new_value is not None
+            else 0
+        )
+        new_len = (self._len - len_of_replaced + len_of_replacement)
+
+        return Map(new_xs, new_kindset, _len=new_len, height=self.height)
+
     def assoc(self, k, v):
         idx = self._idx_for_key(k)
-
-        def xs_with_replacement(new_value):
-            return tuple(
-                new_value if i == idx else x
-                for (i, x) in enumerate(self.xs)
-            )
 
         if self._is_leaf(idx):
             entry = self.xs[idx]
@@ -306,55 +328,29 @@ class Map(Mapping):
                     assert self._hash32(k) == self._hash32(entry[0])
                     raise NotImplementedError('hash collision')
                 # conflict, replace entry with self-node
-                new_value = (
+                new_subnode = (
                     dataclasses.replace(
                         Map.empty(), height=(self.height - 1)
                     )
                     .assoc(entry[0], entry[1])
                     .assoc(k, v)
                 )
-                return Map(
-                    xs_with_replacement(new_value),
-                    kindset=self._kindset_setting_subnode(idx),
-                    _len=(self._len + 1),
-                    height=self.height,
-                )
+                return self._with_replacement(idx, new_subnode, leaf=False)
 
             # This will break when we have to bucket things
             assert entry[0] == k
             # Replace a key
-            return Map(
-                xs_with_replacement((k, v)),
-                kindset=self.kindset,
-                _len=self._len,
-                height=self.height,
-            )
+            return self._with_replacement(idx, (k, v), leaf=True)
         subnode = self.xs[idx]
         if subnode is None:
             # put (k, v) as a entry in this node
-            return Map(
-                xs_with_replacement((k, v)),
-                kindset=self._kindset_setting_leaf(idx),
-                _len=(self._len + 1),
-                height=self.height,
-            )
+            return self._with_replacement(idx, (k, v), leaf=True)
 
-        new_value = subnode.assoc(k, v)
-        return Map(
-            xs_with_replacement(new_value),
-            kindset=self.kindset,
-            _len=(self._len - len(subnode) + len(new_value)),
-            height=self.height,
-        )
+        new_subnode = subnode.assoc(k, v)
+        return self._with_replacement(idx, new_subnode, leaf=False)
 
     def dissoc(self, key):
         idx = self._idx_for_key(key)
-
-        def xs_with_replacement(new_value):
-            return tuple(
-                new_value if i == idx else x
-                for (i, x) in enumerate(self.xs)
-            )
 
         if self._is_leaf(idx):
             (k, v) = self.xs[idx]
@@ -364,31 +360,16 @@ class Map(Mapping):
                 # key is already not there
                 return self
             # replace leaf with empty node
-            return Map(
-                xs_with_replacement(None),
-                kindset=self._kindset_setting_subnode(idx),
-                _len=(self._len - 1),
-                height=self.height
-            )
+            return self._with_replacement(idx, None, leaf=False)
         subnode = self.xs[idx]
         if subnode is None:
             return self
         new_subnode = subnode.dissoc(key)
         assert len(new_subnode) != 0
         if len(new_subnode) == 1:
-            new_value = next(iter(new_subnode.items()))
-            return Map(
-                xs_with_replacement(new_value),
-                kindset=self._kindset_setting_leaf(idx),
-                _len=(self._len - len(subnode) + 1),
-                height=self.height,
-            )
-        return Map(
-            xs_with_replacement(new_subnode),
-            kindset=self.kindset,
-            _len=(self._len - len(subnode) + len(new_subnode)),
-            height=self.height,
-        )
+            new_entry = next(iter(new_subnode.items()))
+            return self._with_replacement(idx, new_entry, leaf=True)
+        return self._with_replacement(idx, new_subnode, leaf=False)
 
     @classmethod
     def empty(cls):
