@@ -167,6 +167,14 @@ def test_hamt():
     assert set(m3) == {'a', 'b'}
 
 
+def test_hamt_dissoc():
+    m = Map.from_iter((('a', 1), ('b', 2)))
+
+    m4 = m.dissoc('a')
+    assert len(m4) == 1
+    assert list(iter(m4)) == ['b']
+
+
 def test_hamt_2():
 
     m = Map.empty()
@@ -184,6 +192,10 @@ def test_hamt_2():
     assert len(m) == 100
     for i in range(0, 100):
         assert m[chr(i)] == i
+
+    for i in range(0, 100):
+        m = m.dissoc(chr(i))
+        assert len(m) == 99 - i
 
 
 def test_try_read__reader_macros():

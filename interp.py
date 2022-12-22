@@ -204,7 +204,7 @@ class ArrayMap(Mapping):
         return ArrayMap(tuple(new_kvs))
 
     def dissoc(self, key):
-        if key not in self.values():
+        if key not in self.keys():
             return self
         return self.from_iter(
             (k, v) for (k, v) in self.items() if k != key
@@ -339,13 +339,54 @@ class Map(Mapping):
                 height=self.height,
             )
 
-        # There is a subnode
-        # assoc within submap and return that stuck into place in the one found
         new_value = subnode.assoc(k, v)
         return Map(
             xs_with_replacement(new_value),
             kindset=self.kindset,
             _len=(self._len - len(subnode) + len(new_value)),
+            height=self.height,
+        )
+
+    def dissoc(self, key):
+        idx = self._idx_for_key(key)
+
+        def xs_with_replacement(new_value):
+            return tuple(
+                new_value if i == idx else x
+                for (i, x) in enumerate(self.xs)
+            )
+
+        if self._is_leaf(idx):
+            (k, v) = self.xs[idx]
+            if k != key:
+                if self.height == 0:
+                    raise NotImplementedError('hash collision')
+                # key is already not there
+                return self
+            # replace leaf with empty node
+            return Map(
+                xs_with_replacement(None),
+                kindset=self._kindset_setting_subnode(idx),
+                _len=(self._len - 1),
+                height=self.height
+            )
+        subnode = self.xs[idx]
+        if subnode is None:
+            return self
+        new_subnode = subnode.dissoc(key)
+        assert len(new_subnode) != 0
+        if len(new_subnode) == 1:
+            new_value = next(iter(new_subnode.items()))
+            return Map(
+                xs_with_replacement(new_value),
+                kindset=self._kindset_setting_leaf(idx),
+                _len=(self._len - len(subnode) + 1),
+                height=self.height,
+            )
+        return Map(
+            xs_with_replacement(new_subnode),
+            kindset=self.kindset,
+            _len=(self._len - len(subnode) + len(new_subnode)),
             height=self.height,
         )
 
