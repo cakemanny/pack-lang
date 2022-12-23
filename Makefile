@@ -2,4 +2,8 @@
 
 .PHONY: test
 test:
-	pytest
+	pytest -x
+
+.PHONY: lint
+lint:
+	flake8 *.py

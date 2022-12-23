@@ -2,10 +2,32 @@ import pytest
 
 from interp import try_read, read_ident, read_num, read_forms, read_all_forms
 from interp import Unmatched, SyntaxError, Unclosed
-from interp import Num, Sym, List, Vec, ArrayMap, Map
+from interp import Num, Sym, Vec, ArrayMap, Map, List, Cons, nil
 from interp import Interpreter, Var, expand_and_evaluate_forms
 
 NIL = tuple()
+
+
+def test_nil():
+    assert bool(nil) is False
+    assert bool(Cons(None, nil)) is True
+    assert bool(Cons(None, None)) is True
+
+
+def test_list():
+    assert len(nil) == 0
+    assert len(Cons(1, nil)) == 1
+    assert len(Cons(2, Cons(1, nil))) == 2
+    assert len(Cons(2, Cons(1, None))) == 2
+
+    assert List.from_iter([1, 2, 3]) == Cons(1, Cons(2, Cons(3, nil)))
+    assert List.from_iter(range(3)) == Cons(0, Cons(1, Cons(2, nil)))
+
+    def aux():
+        yield 0
+        yield 1
+        yield 2
+    assert List.from_iter(aux()) == Cons(0, Cons(1, Cons(2, nil)))
 
 
 def test_read_ident():
@@ -34,11 +56,11 @@ def test_read_num():
 
 
 def test_try_read():
-    assert try_read('()') == (List(NIL), '')
-    assert try_read('( )') == (List(NIL), '')
-    assert try_read('(  )') == (List(NIL), '')
-    assert try_read('[]') == (Vec(NIL), '')
-    assert try_read('[  ]') == (Vec(NIL), '')
+    assert try_read('()') == (nil, '')
+    assert try_read('( )') == (nil, '')
+    assert try_read('(  )') == (nil, '')
+    assert try_read('[]') == (Vec(), '')
+    assert try_read('[  ]') == (Vec(), '')
     assert try_read('[1 2 3]') == (Vec([Num('1'), Num('2'), Num('3')]), '')
     assert try_read('{  }') == (ArrayMap.from_iter(NIL), '')
     assert try_read('{1 2 3 4 5 6}') == (
@@ -57,10 +79,10 @@ def test_try_read():
     with pytest.raises(Unclosed):
         assert try_read('(') == (None, '')
 
-    assert try_read('(1)') == (List((Num('1'),)), '')
+    assert try_read('(1)') == (Cons(Num('1'), nil), '')
 
     assert try_read('(\n1\n2\n3\n)') == (
-        List((Num('1'), Num('2'), Num('3'),)), ''
+        Cons(Num('1'), Cons(Num('2'), Cons(Num('3'), nil))), ''
     )
 
     with pytest.raises(SyntaxError) as exc_info:
@@ -218,10 +240,10 @@ def test_try_read__reader_macros():
 @pytest.mark.parametrize('line_values,expected_forms', [
     (['1'], (Num('1'),)),
     (['[1', '2]'], (Vec((Num('1'), Num('2'),)),)),
-    (['(', ')'], (List(NIL),)),
-    (['(', ') []'], (List(NIL), Vec(NIL),)),
-    (['()', '[]'], (List(NIL),)),  # second line doesn't happen yet
-    (['(', ') [', ']'], (List(NIL), Vec(NIL),)),
+    (['(', ')'], (nil,)),
+    (['(', ') []'], (nil, Vec(),)),
+    (['()', '[]'], (nil,)),  # second line doesn't happen yet
+    (['(', ') [', ']'], (nil, Vec(),)),
 ])
 def test_read_forms(line_values, expected_forms):
 
@@ -318,17 +340,21 @@ def test_expand_and_evaluate__4(initial_interpreter):
     (def not (fn not [x] (if x false true)))
     {(not false) 1 (not (not false)) 0}
     [1 2 3 (not 3)]
+    (ns user)
+    (not false)
     """
     forms = read_all_forms(text)
 
     results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
 
     assert 'pack.core' in interp.namespaces
-    assert interp.current_ns.name == 'pack.core'
+    assert interp.current_ns.name == 'user'
     assert interp.namespaces['pack.core'].defs['not']
     assert results == [
         None,
         Var(Sym('pack.core', 'not'), Any(Fn)),
         Map.empty().assoc(True, 1).assoc(False, 0),
         Vec([1, 2, 3, False]),
+        None,
+        True,
     ]

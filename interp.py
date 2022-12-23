@@ -3,7 +3,7 @@
 import dataclasses
 import os
 import sys
-from collections.abc import Sequence, Mapping, Set
+from collections.abc import Sequence, Mapping, Set, Sized
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any, Optional
@@ -17,7 +17,7 @@ from typing import Any, Optional
 WHITESPACE = (' ', '\n', '\t', '\v')
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Sym:
     ns: Optional[str]
     n: str
@@ -36,12 +36,54 @@ class Num:
         return self.n
 
 
-@dataclass(frozen=True)
-class List:
-    xs: tuple
+# should make this a sequence ...
+class List(Sized):
+    @staticmethod
+    def from_iter(it):
+        try:
+            xs = nil
+            for x in reversed(it):
+                xs = Cons(x, xs)
+            return xs
+        except TypeError:
+            # not reversible
+            return List.from_iter(tuple(it))
+
+
+class Nil(List):
+    def __repr__(self):
+        return '()'
+
+    def __len__(self):
+        return 0
+
+
+nil = Nil()
+
+
+@dataclass(frozen=True, slots=True)
+class Cons(List):
+    hd: Any
+    tl: 'Optional[List]'
+
+    def __post_init__(self):
+        if self.tl is not None and self.tl is not nil:
+            assert isinstance(self.tl, Cons)
+
+    def __iter__(self):
+        cons = self
+        while cons is not None and cons is not nil:
+            yield cons.hd
+            cons = cons.tl
 
     def __str__(self):
-        return '(' + ' '.join(map(str, self.xs)) + ')'
+        return '(' + ' '.join(map(str, iter(self))) + ')'
+
+    def __bool__(self):
+        return True
+
+    def __len__(self):
+        return sum(map(lambda _: 1, self), 0)
 
 
 # itertools recipes
@@ -64,8 +106,8 @@ class Vec(Sequence):
     xs: tuple[Any | 'Vec']
     height: int
 
-    def __init__(self, xs: list | tuple, height=None):
-        # Would be nice to implement a version that works for iterable
+    def __init__(self, xs: list | tuple = tuple(), height=None):
+        # TODO: implement a version that works for iterable
         self._len = len(xs)
 
         if height is None:
@@ -122,7 +164,7 @@ class Vec(Sequence):
         ))) + ']'
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ArrayMap(Mapping):
     kvs: tuple
 
@@ -180,12 +222,12 @@ class ArrayMap(Mapping):
 
     def values(self):
         kvs = self.kvs
-        # Could be rewritten to return a view
+        # TODO: rewrite to return a view
         return [kvs[i + 1] for i in range(0, len(kvs), 2)]
 
     def __str__(self):
         return '{' + '  '.join(
-           f'{k!r} {v!r}' for (k, v) in self.items()
+            f'{k!r} {v!r}' for (k, v) in self.items()
         ) + '}'
 
     def __repr__(self):
@@ -227,7 +269,7 @@ class ArrayMap(Mapping):
         return cls(tuple(aux()))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Map(Mapping):
     """
     A HAMT Map. A Map is a 32 element tuple containing either a map entry or a
@@ -376,7 +418,7 @@ class Map(Mapping):
 
     def __str__(self):
         return '{' + '  '.join(
-           f'{k!r} {v!r}' for (k, v) in self.items()
+            f'{k!r} {v!r}' for (k, v) in self.items()
         ) + '}'
 
     def __repr__(self):
@@ -475,7 +517,7 @@ def take_pairs(xs):
 def close_sequence(opener, elements):
     match opener:
         case '(':
-            return List(tuple(elements))
+            return List.from_iter(elements)
         case '[':
             return Vec(elements)
         case '{':
@@ -506,7 +548,7 @@ def read_quoted(text):
     to_quote, remaining = try_read(text)
     if to_quote is None:
         raise Unclosed("'", remaining)
-    return List((Sym(None, 'quote'), to_quote)), remaining
+    return Cons(Sym(None, 'quote'), Cons(to_quote, nil)), remaining
 
 
 class PackLangError(Exception):
@@ -642,6 +684,10 @@ class Interpreter:
         return Interpreter(namespaces)
 
     @property
+    def default_ns(self):
+        return self.namespaces['pack.core']
+
+    @property
     def current_ns(self):
         return self.namespaces['pack.core'].defs['*ns*'].value
 
@@ -694,34 +740,39 @@ def extract_closure(body, params, interp, env):
 
 def eval_form(form, interp, env):
     match form:
+        case x if x is nil:
+            return nil, interp
         case None | True | False:
             return form, interp
-        case List((Sym(None, 'ns'), Sym(None, name), *_)):
+        case Cons(Sym(None, 'ns'), Cons(Sym(None, name), _)):
             return None, interp.switch_namespace(name)
-        case List((Sym(None, 'ns'), *_)):
+        case Cons(Sym(None, 'ns'), _):
             raise SemanticError('ns expects a symbol as argument')
 
-        case List((Sym(None, 'def'), Sym(ns_name, name), init)):
+        case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Cons(init, Nil()))):
             init_val, interp = eval_form(init, interp, env)
             var = interp.namespaces[ns_name].defs[name]
             # !Mutation!
             var.value = init_val
             return var, interp
-        case List((Sym(None, 'if'), predicate, consequent, alternative)):
+        case Cons(Sym(None, 'if'),
+                  Cons(predicate,
+                       Cons(consequent, Cons(alternative, Nil())))):
             p, interp = eval_form(predicate, interp, env)
             if p:
                 return eval_form(consequent, interp, env)
             return eval_form(alternative, interp, env)
-        case List((Sym(None, 'fn'), params, body)):
+
+        case Cons(Sym(None, 'fn'), Cons(params, Cons(body, Nil()))):
             closure = extract_closure(body, params, interp, env)
             return Fn(None, params, body, closure), interp
-        case List((Sym(None, 'fn'), name, params, body)):
+        case Cons(Sym(None, 'fn'), Cons(name, Cons(params, Cons(body, Nil())))):
             # TODO: create a var to store the name in?
             closure = extract_closure(body, params, interp, env)
             return Fn(name, params, body, closure), interp
-        case List((Sym(None, 'quote'), arg)):
+        case Cons(Sym(None, 'quote'), Cons(arg, Nil())):
             return arg, interp
-        case List((Sym(None, 'quote'), *args)):
+        case Cons(Sym(None, 'quote'), args):
             raise SemanticError(
                 f'wrong number of arguments to quote: {len(args)}'
             )
@@ -744,8 +795,10 @@ def eval_form(form, interp, env):
                 return env[sym], interp
             if name in interp.current_ns.defs:
                 return interp.current_ns.defs[name].value, interp
+            if name in interp.default_ns.defs:
+                return interp.default_ns.defs[name].value, interp
             raise EvalError(f'Could not resolve {sym} in this context')
-        case List((proc_form, *args)):
+        case Cons(proc_form, args):
             proc, interp = eval_form(proc_form, interp, env)
 
             arg_vals = []
@@ -775,19 +828,19 @@ def macroexpand_1(form, interp):
     match form:
         case None:
             return None, interp
-        case List((Sym(None, 'ns'), Sym(None, name), *_)):
+        case Cons(Sym(None, 'ns'), Cons(Sym(None, name), _)):
             return form, interp.switch_namespace(name)
-        case List((Sym(None, 'ns'), *_)):
+        case Cons(Sym(None, 'ns'), _):
             raise SemanticError('ns expects a symbol as argument')
 
-        case List((Sym(None, 'def') as deff, Sym(_, _) as sym)):
-            return List((deff, sym, None)), interp
-        case List((Sym(None, 'def'), Sym(None, name), init)):
+        case Cons(Sym(None, 'def') as deff, Cons(Sym(_, _) as sym, Nil())):
+            return Cons(deff, Cons(sym, Cons(None, nil))), interp
+        case Cons(Sym(None, 'def'), Cons(Sym(None, name), Cons(init, _))):
             # Should make a note of whether this is a macro or not
 
             ns = interp.current_ns.name
-            return List((Sym(None, 'def'), Sym(ns, name), init)), interp
-        case List((Sym(None, 'def'), Sym(ns_name, name) as sym, init)):
+            return Cons(Sym(None, 'def'), Cons(Sym(ns, name), Cons(init, nil))), interp
+        case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name) as sym, Cons(init, Nil()))):
             try:
                 ns = interp.namespaces[ns_name]
             except KeyError:
@@ -804,15 +857,15 @@ def macroexpand_1(form, interp):
                     )
                 )
             )
-        case List((Sym('def'), *_)):
+        case Cons(Sym('def'), _):
             raise SemanticError('def expects a symbol as argument')
 
-        case List((Sym(None, 'if'), p, c)):
-            return List((Sym(None, 'if'), p, c, None)), interp
-        case List((Sym(None, 'if'), _, _, _) | (Sym(None, 'if'), _, _)):
+        case Cons(Sym(None, 'if'), Cons(p, Cons(c, Nil()))):
+            return Cons(Sym(None, 'if'), Cons(p, Cons(c, Cons(None, nil)))), interp
+        case Cons(Sym(None, 'if'), Cons(_, Cons(_, Cons(_, Nil())))):
             return form, interp
-        case List((Sym(None, 'if'), *_)):
-            raise SyntaxError('invalid special form if')
+        case Cons(Sym(None, 'if'), _):
+            raise SyntaxError('invalid special form if: {form}')
         # case ...
         case other:
             return other, interp
