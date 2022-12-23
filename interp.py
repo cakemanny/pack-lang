@@ -3,7 +3,7 @@
 import dataclasses
 import os
 import sys
-from collections.abc import Sequence, Mapping, Set, Sized
+from collections.abc import Sequence, Mapping, Set, Sized, Collection
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any, Optional
@@ -51,6 +51,9 @@ class List(Sized):
 
 
 class Nil(List):
+
+    __slots__ = ()
+
     def __repr__(self):
         return '()'
 
@@ -106,7 +109,7 @@ class Vec(Sequence):
     xs: tuple[Any | 'Vec']
     height: int
 
-    def __init__(self, xs: list | tuple = tuple(), height=None):
+    def __init__(self, xs: list | tuple = (), height=None):
         # TODO: implement a version that works for iterable
         self._len = len(xs)
 
@@ -201,6 +204,8 @@ class ArrayMap(Mapping):
             return False
         return True
 
+    # We implement items and values ourselves because the mixins from
+    # Mapping would be O(n^2)
     def items(self):
         kvs = self.kvs
 
@@ -217,13 +222,25 @@ class ArrayMap(Mapping):
                     if item == (kvs[i], kvs[i + 1]):
                         return True
                 return False
-
         return ItemsView()
 
     def values(self):
         kvs = self.kvs
-        # TODO: rewrite to return a view
-        return [kvs[i + 1] for i in range(0, len(kvs), 2)]
+
+        class ValuesView(Collection):
+            def __len__(self):
+                return len(kvs) // 2
+
+            def __contains__(self, value):
+                for i in range(1, len(kvs), 2):
+                    v = kvs[i]
+                    if v is value or v == value:
+                        return True
+
+            def __iter__(self):
+                for i in range(1, len(kvs), 2):
+                    yield kvs[i]
+        return ValuesView()
 
     def __str__(self):
         return '{' + '  '.join(
@@ -257,7 +274,7 @@ class ArrayMap(Mapping):
 
     @classmethod
     def empty(cls):
-        return cls(tuple())
+        return cls(())
 
     @classmethod
     def from_iter(cls, it):
@@ -746,8 +763,6 @@ def eval_form(form, interp, env):
             return form, interp
         case Cons(Sym(None, 'ns'), Cons(Sym(None, name), _)):
             return None, interp.switch_namespace(name)
-        case Cons(Sym(None, 'ns'), _):
-            raise SemanticError('ns expects a symbol as argument')
 
         case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Cons(init, Nil()))):
             init_val, interp = eval_form(init, interp, env)

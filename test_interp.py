@@ -140,6 +140,12 @@ def test_arraymap():
     assert list(m.keys()) == ['a', 'b']
     assert 'a' in m.keys() and 'b' in m.keys()
 
+    assert list(m.items()) == [('a', 1), ('b', 2)]
+    assert ('a', 1) in m.items() and ('b', 2) in m.items()
+
+    assert list(m.values()) == [1, 2]
+    assert 1 in m.values() and 2 in m.values()
+
     m2 = ArrayMap.from_iter((('b', 2), ('a', 1)))
     assert m == m2
     assert m2 == m
@@ -342,6 +348,32 @@ def test_expand_and_evaluate__4(initial_interpreter):
     [1 2 3 (not 3)]
     (ns user)
     (not false)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'user'
+    assert interp.namespaces['pack.core'].defs['not']
+    assert results == [
+        None,
+        Var(Sym('pack.core', 'not'), Any(Fn)),
+        Map.empty().assoc(True, 1).assoc(False, 0),
+        Vec([1, 2, 3, False]),
+        None,
+        True,
+    ]
+
+
+@pytest.mark.skip
+def test_expand_and_evaluate__5(initial_interpreter):
+    from interp import Fn
+    text = """\
+    (ns pack.core)
+    (ns user)
+    (require 'example)
+    example/hello
     """
     forms = read_all_forms(text)
 
