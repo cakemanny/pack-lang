@@ -3,7 +3,7 @@
 import dataclasses
 import os
 import sys
-from collections.abc import Sequence, Mapping, Set, Collection
+from collections.abc import Sequence, Mapping, Set
 from dataclasses import dataclass
 from itertools import islice
 from typing import Any, Optional
@@ -140,7 +140,7 @@ class ArrayMap(Mapping):
             k = kvs[i]
             if key is k or key == k:
                 return kvs[i + 1]
-        raise KeyError(k)
+        raise KeyError(key)
 
     def __eq__(self, o):
         if not isinstance(o, Mapping):
@@ -187,6 +187,9 @@ class ArrayMap(Mapping):
         return '{' + '  '.join(
            f'{k!r} {v!r}' for (k, v) in self.items()
         ) + '}'
+
+    def __repr__(self):
+        return str(self)
 
     def assoc(self, key, value):
         new_kvs = list(self.kvs)
@@ -371,6 +374,14 @@ class Map(Mapping):
             return self._with_replacement(idx, new_entry, leaf=True)
         return self._with_replacement(idx, new_subnode, leaf=False)
 
+    def __str__(self):
+        return '{' + '  '.join(
+           f'{k!r} {v!r}' for (k, v) in self.items()
+        ) + '}'
+
+    def __repr__(self):
+        return str(self)
+
     @classmethod
     def empty(cls):
         if not hasattr(cls, '_empty'):
@@ -390,13 +401,13 @@ class Map(Mapping):
 def is_ident_start(c):
     return (
         'a' <= c <= 'z'
-        or c in ('+', '-', '*', '/', '<', '>', '!', '=', '&', '^', '.')
+        or c in ('+', '-', '*', '/', '<', '>', '!', '=', '&', '^', '.', '?')
         or '🌀' <= c <= '🫸'
     )
 
 
 def is_ident(c):
-    return is_ident_start(c) or '0' <= c <= '9'
+    return is_ident_start(c) or (c in ("'")) or '0' <= c <= '9'
 
 
 def split_ident(n):
@@ -422,11 +433,16 @@ def read_ident(text):
 
 def read_num(text, prefix=''):
     i = 0
+    point = 0
     for c in text:
-        if '0' <= c <= '9':
+        if c == '.':
+            point += 1
+        if '0' <= c <= '9' or c == '.':
             i += 1
         else:
             break
+    if point > 1:
+        raise SyntaxError("invalid number literal: multiple '.'s")
     return Num(prefix + text[:i]), text[i:]
 
 
@@ -493,7 +509,11 @@ def read_quoted(text):
     return List((Sym(None, 'quote'), to_quote)), remaining
 
 
-class SyntaxError(Exception):
+class PackLangError(Exception):
+    pass
+
+
+class SyntaxError(PackLangError):
     pass
 
 
@@ -539,6 +559,9 @@ def try_read(text):
             raise NotImplementedError(c)
         case ';':
             return read_comment(text)
+        case ':':
+            # TODO: keywords
+            raise NotImplementedError(c)
         case '\\':
             # TODO characters
             raise NotImplementedError(c)
@@ -578,68 +601,263 @@ def read_forms(previous_lines='', input=input, prompt='=> '):
 #  Interpreter
 # -------------
 
-class SemanticError(Exception):
+class SemanticError(PackLangError):
     pass
 
 
+class EvalError(PackLangError):
+    pass
+
+
+@dataclass(frozen=True)
 class Namespace:
-    def __init__(self, name, parent=None):
-        self.name = name
-        self.parent = parent
-        self.defs = {}
+    name: str
+    defs: Mapping = ArrayMap.empty()
+
+    def apply_defs(self, f):
+        return Namespace(self.name, f(self.defs))
 
 
+@dataclass(frozen=True)
 class Interpreter:
-    def __init__(self):
-        self.namespaces = {}
-        self.current_ns = None
+    namespaces: Mapping  # str -> Namespace
 
-    def switch_namespace(self, name):
+    def switch_namespace(self, name: str):
+        assert isinstance(name, str)
         if name not in self.namespaces:
             ns = Namespace(name)
-        self.current_ns = ns
+        else:
+            ns = self.namespaces[name]
+
+        namespaces = self.namespaces.assoc(name, ns)
+        if '*ns*' not in namespaces['pack.core'].defs:
+            core = namespaces['pack.core'].apply_defs(
+                lambda defs: defs.assoc('*ns*', Var(Sym('pack.core', '*ns*')))
+            )
+            namespaces = namespaces.assoc('pack.core', core)
+
+        # Mutation!
+        namespaces['pack.core'].defs['*ns*'].value = ns
+
+        return Interpreter(namespaces)
+
+    @property
+    def current_ns(self):
+        return self.namespaces['pack.core'].defs['*ns*'].value
 
 
-def expand_and_evaluate_forms(forms, interpreter):
+@dataclass
+class Var:
+    "This is the mutable thing"
+    symbol: Sym
+    value: Any
+
+    def __init__(self, symbol, value=None):
+        assert isinstance(symbol, Sym)
+        self.symbol = symbol
+        self.value = value
+
+    def __str__(self):
+        return f"#'{self.symbol}"
+
+    def __repr__(self):
+        return str(self)
+
+
+class Fn:
+    def __init__(self, name, params, body, env):
+        assert isinstance(params, Vec)
+        self.name = name
+        self.params = params
+        self.body = body
+        self.env = env
+
+    def __call__(self, interp, *args):
+        if len(args) != len(self.params):
+            raise EvalError('incorrect number of arguments')
+        env = self.env
+        for p, arg in zip(self.params, args):
+            env = env.assoc(p, arg)
+        return eval_form(self.body, interp, env)
+
+    def __repr__(self):
+        return f'<Fn({self.name}) object at {hex(id(self))}>'
+
+
+def extract_closure(body, params, interp, env):
+    # To decide is, whether or not the values from the interp should be
+    # captured as they are or not... I think the right answer is to
+    # do so...
+    # TODO
+    return Map.empty()
+
+
+def eval_form(form, interp, env):
+    match form:
+        case None | True | False:
+            return form, interp
+        case List((Sym(None, 'ns'), Sym(None, name), *_)):
+            return None, interp.switch_namespace(name)
+        case List((Sym(None, 'ns'), *_)):
+            raise SemanticError('ns expects a symbol as argument')
+
+        case List((Sym(None, 'def'), Sym(ns_name, name), init)):
+            init_val, interp = eval_form(init, interp, env)
+            var = interp.namespaces[ns_name].defs[name]
+            # !Mutation!
+            var.value = init_val
+            return var, interp
+        case List((Sym(None, 'if'), predicate, consequent, alternative)):
+            p, interp = eval_form(predicate, interp, env)
+            if p:
+                return eval_form(consequent, interp, env)
+            return eval_form(alternative, interp, env)
+        case List((Sym(None, 'fn'), params, body)):
+            closure = extract_closure(body, params, interp, env)
+            return Fn(None, params, body, closure), interp
+        case List((Sym(None, 'fn'), name, params, body)):
+            # TODO: create a var to store the name in?
+            closure = extract_closure(body, params, interp, env)
+            return Fn(name, params, body, closure), interp
+        case List((Sym(None, 'quote'), arg)):
+            return arg, interp
+        case List((Sym(None, 'quote'), *args)):
+            raise SemanticError(
+                f'wrong number of arguments to quote: {len(args)}'
+            )
+        case Num(n):
+            if '.' in n:
+                return float(n), interp
+            return int(n), interp
+        case Sym(ns_name, name) if ns_name is not None:
+            var = interp.namespaces[ns_name].defs[name]
+            assert isinstance(var, Var)
+            return var.value, interp
+        case Sym(None, 'true'):
+            return True, interp
+        case Sym(None, 'false'):
+            return False, interp
+        case Sym(None, 'nil'):
+            return None, interp
+        case Sym(None, name) as sym:
+            if sym in env:
+                return env[sym], interp
+            if name in interp.current_ns.defs:
+                return interp.current_ns.defs[name].value, interp
+            raise EvalError(f'Could not resolve {sym} in this context')
+        case List((proc_form, *args)):
+            proc, interp = eval_form(proc_form, interp, env)
+
+            arg_vals = []
+            for arg in args:
+                arg_val, interp = eval_form(arg, interp, env)
+                arg_vals.append(arg_val)
+            # Assume proc is an Fn
+            return proc(interp, *arg_vals)
+        case ArrayMap() | Map() as m:
+            result_m = ArrayMap.empty()
+            for k, v in m.items():
+                k_val, interp = eval_form(k, interp, env)
+                v_val, interp = eval_form(v, interp, env)
+                result_m = result_m.assoc(k_val, v_val)
+            return result_m, interp
+        case Vec() as vec:
+            values = []
+            for sub_form in vec:
+                value, interp = eval_form(sub_form, interp, env)
+                values.append(value)
+            return Vec(values), interp
+
+    raise NotImplementedError(form)
+
+
+def macroexpand_1(form, interp):
+    match form:
+        case None:
+            return None, interp
+        case List((Sym(None, 'ns'), Sym(None, name), *_)):
+            return form, interp.switch_namespace(name)
+        case List((Sym(None, 'ns'), *_)):
+            raise SemanticError('ns expects a symbol as argument')
+
+        case List((Sym(None, 'def') as deff, Sym(_, _) as sym)):
+            return List((deff, sym, None)), interp
+        case List((Sym(None, 'def'), Sym(None, name), init)):
+            # Should make a note of whether this is a macro or not
+
+            ns = interp.current_ns.name
+            return List((Sym(None, 'def'), Sym(ns, name), init)), interp
+        case List((Sym(None, 'def'), Sym(ns_name, name) as sym, init)):
+            try:
+                ns = interp.namespaces[ns_name]
+            except KeyError:
+                raise SemanticError(f'No such namespace {ns_name!r}')
+            if ns_name != interp.current_ns.name:
+                raise SemanticError(
+                    'Cannot def symbol outside current ns'
+                )
+
+            return form, Interpreter(
+                interp.namespaces.assoc(
+                    ns_name, interp.namespaces[ns_name].apply_defs(
+                        lambda defs: defs.assoc(name, Var(sym))
+                    )
+                )
+            )
+        case List((Sym('def'), *_)):
+            raise SemanticError('def expects a symbol as argument')
+
+        case List((Sym(None, 'if'), p, c)):
+            return List((Sym(None, 'if'), p, c, None)), interp
+        case List((Sym(None, 'if'), _, _, _) | (Sym(None, 'if'), _, _)):
+            return form, interp
+        case List((Sym(None, 'if'), *_)):
+            raise SyntaxError('invalid special form if')
+        # case ...
+        case other:
+            return other, interp
+
+
+def macroexpand(form, interp):
+    while True:
+        new_form, interp = macroexpand_1(form, interp)
+        if new_form == form:
+            return new_form, interp
+        form = new_form
+
+
+def expand_and_evaluate_forms(forms, interp):
     # TODO: macro expand
 
     # Expands forms...
+    expanded_forms = []
     for form in forms:
-        match form:
-            case List((Sym(None, 'ns'), Sym(None, name), *_)):
-                interpreter.switch_namespace(name)
-            case List((Sym(None, 'ns'), *_)):
-                raise SemanticError('ns expects a symbol as argument')
-            case List((Sym(None, 'def'), Sym(None, name), *args)):
-                interpreter.current_ns.defs[name] = {
-                    'form': args
-                }
-            case List((Sym(None, 'def'), Sym(_, name), *args)):
-                # TODO
-                pass
-            case List((Sym('def'), *_)):
-                raise SemanticError('def expects a symbol as argument')
-            case other:
-                raise NotImplementedError(other)
+        expanded, interp = macroexpand(form, interp)
+        expanded_forms.append(expanded)
 
     # TODO: Evaluate forms
+    results = []
+    for form in expanded_forms:
+        result, interp = eval_form(form, interp, Map.empty())
+        results.append(result)
+    return results, interp
 
 
 def main():
 
-    interpreter = Interpreter()
+    interp = Interpreter(Map.empty())
 
     with open('core.pack') as f:
         forms = read_all_forms(f.read())
-    expand_and_evaluate_forms(forms, interpreter)
+    _, interp = expand_and_evaluate_forms(forms, interp)
 
-    interpreter.switch_namespace('user')
+    interp = interp.switch_namespace('user')
 
     if os.isatty(sys.stdin.fileno()):
 
         while True:
             try:
-                forms = read_forms(prompt=interpreter.current_ns.name + '=> ')
+                forms = read_forms(prompt=interp.current_ns.name + '=> ')
             except EOFError:
                 print()
                 exit(0)
@@ -651,17 +869,16 @@ def main():
                 print(form)
 
             try:
-                expand_and_evaluate_forms(forms, interpreter)
-            except NotImplementedError as e:
+                results, interp = expand_and_evaluate_forms(forms, interp)
+                for result in results:
+                    print(result)
+            except (NotImplementedError, SemanticError, EvalError) as e:
                 print(repr(e))
 
     else:
 
         forms = read_all_forms(sys.stdin.read())
-        for form in forms:
-            print(form)
-
-        expand_and_evaluate_forms(forms, interpreter)
+        _, interp = expand_and_evaluate_forms(forms, interp)
 
 
 if __name__ == '__main__':

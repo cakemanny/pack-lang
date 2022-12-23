@@ -3,6 +3,7 @@ import pytest
 from interp import try_read, read_ident, read_num, read_forms, read_all_forms
 from interp import Unmatched, SyntaxError, Unclosed
 from interp import Num, Sym, List, Vec, ArrayMap, Map
+from interp import Interpreter, Var, expand_and_evaluate_forms
 
 NIL = tuple()
 
@@ -18,12 +19,18 @@ def test_read_ident():
 
     assert read_ident('ns/') == (Sym(None, 'ns/'), '')
 
+    assert read_ident('py/sys.stdin') == (Sym('py', 'sys.stdin'), '')
+
 
 def test_read_num():
     assert read_num('1') == (Num('1'), '')
     assert read_num('1 ') == (Num('1'), ' ')
     assert read_num('123') == (Num('123'), '')
     assert read_num('123 ') == (Num('123'), ' ')
+    assert read_num('123.3 ') == (Num('123.3'), ' ')
+
+    with pytest.raises(SyntaxError):
+        read_num('12.3.3 ')
 
 
 def test_try_read():
@@ -119,6 +126,12 @@ def test_arraymap():
     assert m != m3
     assert m3 != m
     assert len(m3) == 2
+
+    match m3:
+        case {'a': a, 'b': b}:
+            assert a == 1 and b == 3
+        case _:
+            assert False, "match fail"
 
 
 def test_arraymap_assoc():
@@ -235,3 +248,87 @@ def test_read_all_forms__unclosed_file():
 # -------------
 #  Interpreter
 # -------------
+
+@pytest.fixture
+def initial_interpreter():
+    return Interpreter(Map.empty())
+
+
+def test_expand_and_evaluate__1(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert results == [None]
+
+
+def test_expand_and_evaluate__2(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (if 1 2)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert results == [None, 2]
+
+
+def test_expand_and_evaluate__3(initial_interpreter):
+    from interp import Fn
+    text = """\
+    (ns pack.core)
+    ;(def not)
+
+    (def not (fn not [x] (if x false true)))
+    (not false)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert interp.namespaces['pack.core'].defs['not']
+    assert results == [None, Var(Sym('pack.core', 'not'), Any(Fn)), True]
+
+
+class Any:
+    def __init__(self, type=None):
+        self.type = type
+
+    def __eq__(self, o):
+        if self.type is not None:
+            return isinstance(o, self.type)
+        return True
+
+
+def test_expand_and_evaluate__4(initial_interpreter):
+    from interp import Fn
+    text = """\
+    (ns pack.core)
+
+    (def not (fn not [x] (if x false true)))
+    {(not false) 1 (not (not false)) 0}
+    [1 2 3 (not 3)]
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert interp.namespaces['pack.core'].defs['not']
+    assert results == [
+        None,
+        Var(Sym('pack.core', 'not'), Any(Fn)),
+        Map.empty().assoc(True, 1).assoc(False, 0),
+        Vec([1, 2, 3, False]),
+    ]
