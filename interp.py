@@ -3,6 +3,7 @@
 import dataclasses
 import os
 import sys
+import traceback
 from collections.abc import Sequence, Mapping, Set, Sized, Collection
 from dataclasses import dataclass
 from functools import reduce
@@ -776,14 +777,13 @@ def extract_closure(body, params, interp, env):
     # captured as they are or not... I think the right answer is to
     # do so...
     # TODO
-    m = Map.empty()  # closure
-    lets = Map.empty()
+    m = ArrayMap.empty()  # closure
+    # TODO: combine params and lets into bound_vars and use a Set for this
+    lets = ArrayMap.empty()
 
     def aux(expr, m, lets):
         match expr:
-            # TODO: don't descend into quote
-            case Sym(None, 'if' | 'def' | 'fn' | 'quote'
-                     | 'true' | 'false' | 'nil'):
+            case Sym(None, 'if' | 'fn' | 'true' | 'false' | 'nil'):
                 return m
             case Sym(None, name) as sym:
                 # Maybe this is also the point to do more macro expanding?
@@ -795,14 +795,27 @@ def extract_closure(body, params, interp, env):
                     return m.assoc(sym, interp.current_ns.defs[name])
                 if name in interp.current_ns.aliases:
                     return m.assoc(sym, interp.current_ns.aliases[name])
+                if name in interp.default_ns.defs:
+                    return m.assoc(sym, interp.default_ns.defs[name])
                 raise EvalError(
                     f'Could not resolve symbol: {sym!r} in this context'
                 )
             case Cons(Sym(None, '.'), Cons(obj, Cons(_, Nil()))):
                 # onlt the obj is evaluated, not the attr
                 return aux(obj, m, lets)
+            case Cons(Sym(None, 'def'), Cons(Sym(), Cons(init, Nil()))):
+                return aux(init, m, lets)
+            case Cons(Sym(None, 'fn'),
+                      Cons(Sym(), Cons(Vec() as fn_params, Cons(body, Nil())))) \
+                    | Cons(Sym(None, 'fn'),
+                           Cons(Vec() as fn_params, Cons(body, Nil()))):
+                lets = reduce(lambda xs, p: xs.assoc(p, None), fn_params, lets)
+                return aux(body, m, lets)
+            case Cons(Sym(None, 'quote'), _):
+                return m
             case Cons(hd, tl):
-                return aux(tl, aux(hd, m, lets), lets)
+                m = aux(hd, m, lets)
+                return aux(tl, m, lets)
             case Vec() as vec:
                 return reduce(lambda m, sub_form: aux(sub_form, m, lets), vec, m)
             case ArrayMap() | Map() as m:
@@ -866,13 +879,16 @@ def eval_form(form, interp, env):
                 return eval_form(consequent, interp, env)
             return eval_form(alternative, interp, env)
 
-        case Cons(Sym(None, 'fn'), Cons(params, Cons(body, Nil()))):
+        case Cons(Sym(None, 'fn'), Cons(Vec() as params, Cons(body, Nil()))):
             closure = extract_closure(body, params, interp, env)
             return Fn(None, params, body, closure), interp
-        case Cons(Sym(None, 'fn'), Cons(name, Cons(params, Cons(body, Nil())))):
+        case Cons(Sym(None, 'fn'),
+                  Cons(Sym(None, name), Cons(Vec() as params, Cons(body, Nil())))):
             # TODO: create a var to store the name in?
             closure = extract_closure(body, params, interp, env)
             return Fn(name, params, body, closure), interp
+        case Cons(Sym(None, 'fn'), _):
+            raise SyntaxError(f'invalid fn form: {form}')
         case Cons(Sym(None, 'quote'), Cons(arg, Nil())):
             return arg, interp
         case Cons(Sym(None, 'quote'), args):
@@ -1045,7 +1061,6 @@ def main():
             except (NotImplementedError, PackLangError) as e:
                 print(repr(e))
             except Exception:
-                import traceback
                 traceback.print_exc()
 
     else:

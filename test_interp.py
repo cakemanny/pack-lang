@@ -377,6 +377,7 @@ def test_expand_and_evaluate__5(initial_interpreter):
 
     (ns user)
     (str 'example)
+    (def f (fn [x] (fn [y] (str y x))))
     """
     forms = read_all_forms(text)
 
@@ -389,9 +390,13 @@ def test_expand_and_evaluate__5(initial_interpreter):
         Var(Sym('pack.core', 'str'), Any(Fn)),
         None,
         "example",
+        Var(Sym('user', 'f'), Any(Fn)),
     ]
     assert results[2].value.env == ArrayMap.empty().assoc(
         Sym(None, 'builtins'), Any(Var)
+    )
+    assert results[5].value.env == ArrayMap.empty().assoc(
+        Sym(None, 'str'), Any(Var)
     )
 
 
