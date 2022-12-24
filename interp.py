@@ -30,14 +30,6 @@ class Sym:
         return self.n
 
 
-@dataclass(frozen=True)
-class Num:
-    n: str
-
-    def __str__(self):
-        return self.n
-
-
 # should make this a sequence ...
 class List(Sized):
     @staticmethod
@@ -516,7 +508,9 @@ def read_num(text, prefix=''):
             break
     if point > 1:
         raise SyntaxError("invalid number literal: multiple '.'s")
-    return Num(prefix + text[:i]), text[i:]
+    if point == 1:
+        return float(prefix + text[:i]), text[i:]
+    return int(prefix + text[:i]), text[i:]
 
 
 def read_comment(text):
@@ -835,7 +829,7 @@ def eval_form(form, interp, env):
     match form:
         case x if x is nil:
             return nil, interp
-        case None | True | False:
+        case None | True | False | int() | float():
             return form, interp
         # TODO: change this to in-ns
         case Cons(Sym(None, 'ns'), Cons(Sym(None, name), _)):
@@ -895,11 +889,6 @@ def eval_form(form, interp, env):
             raise SemanticError(
                 f'wrong number of arguments to quote: {len(args)}'
             )
-        # TODO: evaluate numbers in the reader
-        case Num(n):
-            if '.' in n:
-                return float(n), interp
-            return int(n), interp
         case Sym(ns_name, name) if ns_name is not None:
             var = interp.namespaces[ns_name].defs[name]
             assert isinstance(var, Var)
@@ -1037,7 +1026,7 @@ def main():
         forms = read_all_forms(f.read())
     _, interp = expand_and_evaluate_forms(forms, interp)
 
-    interp = interp.switch_namespace('user')
+    _, interp = expand_and_evaluate_forms(read_all_forms("(ns user)"), interp)
 
     if os.isatty(sys.stdin.fileno()):
 

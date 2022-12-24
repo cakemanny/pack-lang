@@ -2,7 +2,7 @@ import pytest
 
 from interp import try_read, read_ident, read_num, read_forms, read_all_forms
 from interp import Unmatched, SyntaxError, Unclosed
-from interp import Num, Sym, Vec, ArrayMap, Map, List, Cons, nil
+from interp import Sym, Vec, ArrayMap, Map, List, Cons, nil
 from interp import Interpreter, Var, expand_and_evaluate_forms
 
 NIL = tuple()
@@ -45,11 +45,11 @@ def test_read_ident():
 
 
 def test_read_num():
-    assert read_num('1') == (Num('1'), '')
-    assert read_num('1 ') == (Num('1'), ' ')
-    assert read_num('123') == (Num('123'), '')
-    assert read_num('123 ') == (Num('123'), ' ')
-    assert read_num('123.3 ') == (Num('123.3'), ' ')
+    assert read_num('1') == (1, '')
+    assert read_num('1 ') == (1, ' ')
+    assert read_num('123') == (123, '')
+    assert read_num('123 ') == (123, ' ')
+    assert read_num('123.3 ') == (123.3, ' ')
 
     with pytest.raises(SyntaxError):
         read_num('12.3.3 ')
@@ -61,13 +61,13 @@ def test_try_read():
     assert try_read('(  )') == (nil, '')
     assert try_read('[]') == (Vec(), '')
     assert try_read('[  ]') == (Vec(), '')
-    assert try_read('[1 2 3]') == (Vec([Num('1'), Num('2'), Num('3')]), '')
+    assert try_read('[1 2 3]') == (Vec([1, 2, 3]), '')
     assert try_read('{  }') == (ArrayMap.from_iter(NIL), '')
     assert try_read('{1 2 3 4 5 6}') == (
         ArrayMap.from_iter((
-            (Num('1'), Num('2')),
-            (Num('3'), Num('4')),
-            (Num('5'), Num('6'))
+            (1, 2),
+            (3, 4),
+            (5, 6)
         )),
         ''
     )
@@ -79,18 +79,18 @@ def test_try_read():
     with pytest.raises(Unclosed):
         assert try_read('(') == (None, '')
 
-    assert try_read('(1)') == (Cons(Num('1'), nil), '')
+    assert try_read('(1)') == (Cons(1, nil), '')
 
     assert try_read('(\n1\n2\n3\n)') == (
-        Cons(Num('1'), Cons(Num('2'), Cons(Num('3'), nil))), ''
+        Cons(1, Cons(2, Cons(3, nil))), ''
     )
 
     with pytest.raises(SyntaxError) as exc_info:
         try_read('{ 1 }')
     assert 'even number of forms' in str(exc_info.value)
 
-    assert try_read('-1')[0] == Num('-1')
-    assert try_read('+1')[0] == Num('+1')
+    assert try_read('-1')[0] == -1
+    assert try_read('+1')[0] == +1
 
     assert try_read(';hi\n1') == (None, '1')
     assert try_read(';hi\n') == (None, '')
@@ -244,8 +244,8 @@ def test_try_read__reader_macros():
 
 
 @pytest.mark.parametrize('line_values,expected_forms', [
-    (['1'], (Num('1'),)),
-    (['[1', '2]'], (Vec((Num('1'), Num('2'),)),)),
+    (['1'], (1,)),
+    (['[1', '2]'], (Vec((1, 2,)),)),
     (['(', ')'], (nil,)),
     (['(', ') []'], (nil, Vec(),)),
     (['()', '[]'], (nil,)),  # second line doesn't happen yet
