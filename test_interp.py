@@ -1,8 +1,10 @@
 import pytest
 
-from interp import try_read, read_ident, read_num, read_forms, read_all_forms
+from interp import (
+    try_read, read_sym, read_num, read_str, read_forms, read_all_forms
+)
 from interp import Unmatched, SyntaxError, Unclosed
-from interp import Sym, Vec, ArrayMap, Map, List, Cons, nil
+from interp import Sym, Keyword, Vec, ArrayMap, Map, List, Cons, nil
 from interp import Interpreter, Var, expand_and_evaluate_forms
 
 NIL = tuple()
@@ -30,18 +32,18 @@ def test_list():
     assert List.from_iter(aux()) == Cons(0, Cons(1, Cons(2, nil)))
 
 
-def test_read_ident():
-    assert read_ident('a') == (Sym(None, 'a'), '')
-    assert read_ident('z') == (Sym(None, 'z'), '')
-    assert read_ident('hi ') == (Sym(None, 'hi'), ' ')
-    assert read_ident('h9 ') == (Sym(None, 'h9'), ' ')
-    assert read_ident('🫣🫒 😈') == (Sym(None, '🫣🫒'), ' 😈')
-    assert read_ident('ns/n') == (Sym('ns', 'n'), '')
-    assert read_ident('ns//') == (Sym('ns', '/'), '')
+def test_read_sym():
+    assert read_sym('a') == (Sym(None, 'a'), '')
+    assert read_sym('z') == (Sym(None, 'z'), '')
+    assert read_sym('hi ') == (Sym(None, 'hi'), ' ')
+    assert read_sym('h9 ') == (Sym(None, 'h9'), ' ')
+    assert read_sym('🫣🫒 😈') == (Sym(None, '🫣🫒'), ' 😈')
+    assert read_sym('ns/n') == (Sym('ns', 'n'), '')
+    assert read_sym('ns//') == (Sym('ns', '/'), '')
 
-    assert read_ident('ns/') == (Sym(None, 'ns/'), '')
+    assert read_sym('ns/') == (Sym(None, 'ns/'), '')
 
-    assert read_ident('py/sys.stdin') == (Sym('py', 'sys.stdin'), '')
+    assert read_sym('py/sys.stdin') == (Sym('py', 'sys.stdin'), '')
 
 
 def test_read_num():
@@ -53,6 +55,18 @@ def test_read_num():
 
     with pytest.raises(SyntaxError):
         read_num('12.3.3 ')
+
+
+def test_read_str():
+    assert read_str('""') == ('', '')
+    assert read_str('"hallo"') == ('hallo', '')
+    assert read_str('"hallo"  some "extra"') == ('hallo', '  some "extra"')
+
+    with pytest.raises(Unclosed):
+        read_str('"hallo')
+
+    assert read_str(r'"ha\nllo"') == ('ha\nllo', '')
+    assert read_str(r'"ha\"llo"') == ('ha"llo', '')
 
 
 def test_try_read():
@@ -293,6 +307,58 @@ def test_expand_and_evaluate__1(initial_interpreter):
     assert 'pack.core' in interp.namespaces
     assert interp.current_ns.name == 'pack.core'
     assert results == [None]
+
+
+def test_expand_and_evaluate__syntax(initial_interpreter):
+    # Just check that the evaluator doesn't choke
+    text = """\
+    (ns pack.core)
+    :a-keyword
+    "a string"
+    -1
+    +1
+    -1.2
+    +1.2
+    [1 2 3]
+    {:a 1 :b 2}
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert results == [
+        None,
+        Keyword(None, 'a-keyword'),
+        "a string",
+        -1, 1, -1.2, 1.2, Vec([1, 2, 3]),
+        Map.empty().assoc(Keyword(None, 'a'), 1).assoc(Keyword(None, 'b'), 2)
+    ]
+
+
+def test_expand_and_evaluate__functionality(initial_interpreter):
+    # Just check that the evaluator doesn't choke
+    text = """\
+    (ns pack.core)
+    (:a {:a 1 :b 2})
+    ({:a 1 :b 2} :a)
+    ({:a 1 :b 2} :c 3)
+    ([1 2 7] 2)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert results == [
+        None,
+        1,
+        1,
+        3,
+        7,
+    ]
 
 
 def test_expand_and_evaluate__2(initial_interpreter):

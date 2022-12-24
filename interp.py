@@ -29,6 +29,30 @@ class Sym:
             return self.ns + '/' + self.n
         return self.n
 
+    def __repr__(self):
+        return str(self)
+
+
+@dataclass(frozen=True, slots=True)
+class Keyword:
+    ns: Optional[str]
+    n: str
+
+    def __str__(self):
+        if self.ns:
+            return f':{self.ns}/{self.n}'
+        return f':{self.n}'
+
+    def __repr__(self):
+        return str(self)
+
+    def __call__(self, a_map, default=None):
+        try:
+            return a_map.get(self, default)
+        except AttributeError:
+            # clearly not a map
+            return None
+
 
 # should make this a sequence ...
 class List(Sized):
@@ -159,6 +183,9 @@ class Vec(Sequence):
 
         return self.xs[subvec_idx][mask & idx]
 
+    def __call__(self, idx: int):
+        return self[idx]
+
     def __str__(self):
         return '[' + ' '.join(map(str, self)) + ']'
 
@@ -191,6 +218,9 @@ class ArrayMap(Mapping):
             if key is k or key == k:
                 return kvs[i + 1]
         raise KeyError(key)
+
+    def __call__(self, key, default=None):
+        return self.get(key, default)
 
     def __eq__(self, o):
         if not isinstance(o, Mapping):
@@ -493,7 +523,18 @@ def read_ident(text):
         else:
             break
 
-    return Sym(*split_ident(text[:i])), text[i:]
+    return split_ident(text[:i]), text[i:]
+
+
+def read_sym(text):
+    (namespace, name), remaining = read_ident(text)
+    return Sym(namespace, name), remaining
+
+
+def read_keyword(text):
+    assert text[0] == ':'
+    (namespace, name), remaining = read_ident(text[1:])
+    return Keyword(namespace, name), remaining
 
 
 def read_num(text, prefix=''):
@@ -511,6 +552,48 @@ def read_num(text, prefix=''):
     if point == 1:
         return float(prefix + text[:i]), text[i:]
     return int(prefix + text[:i]), text[i:]
+
+
+def read_str(text):
+    assert text[0] == '"'
+    text = text[1:]
+
+    escapes = {
+        'a': '\a', 'b': '\b', 'f': '\f', 'r': '\r', 'n': '\n',
+        't': '\t', 'v': '\v'
+    }
+
+    def aux(text):
+        seg_start = 0
+        i = 0
+        n = len(text)
+        while i < n:
+            c = text[i]
+            if c == '"':
+                yield text[seg_start:i]
+                yield text[i + 1:]
+                break
+            if c == '\\':
+                # switch to processing escape
+                yield text[seg_start:i]
+                seg_start = i
+                i += 1
+                c = text[i]
+                if c == '\n':
+                    pass
+                elif c in ('\\', "'", '"'):
+                    yield c
+                elif c in escapes:
+                    yield escapes[c]
+                else:
+                    raise SyntaxError(f'unknown escape sequence \\{c}')
+                seg_start += 2
+            i += 1
+        if i == n:
+            raise Unclosed('"')
+
+    segments = list(aux(text))
+    return ''.join(segments[:-1]), segments[-1]
 
 
 def read_comment(text):
@@ -585,11 +668,11 @@ class SyntaxError(PackLangError):
 
 
 class Unmatched(SyntaxError):
-    pass
+    "something ended that hadn't begun"
 
 
 class Unclosed(SyntaxError):
-    pass
+    "something started but never ended"
 
 
 def try_read(text):
@@ -622,19 +705,13 @@ def try_read(text):
         case n if '0' <= n <= '9':
             return read_num(text)
         case '"':
-            # TODO: strings
-            raise NotImplementedError(c)
+            return read_str(text)
         case ';':
             return read_comment(text)
         case ':':
-            # TODO: keywords
-            raise NotImplementedError(c)
-        case '\\':
-            # TODO characters
-            raise NotImplementedError(c)
-
+            return read_keyword(text)
         case s if is_ident(s):
-            return read_ident(text)
+            return read_sym(text)
 
     raise NotImplementedError(c)
 
@@ -829,7 +906,7 @@ def eval_form(form, interp, env):
     match form:
         case x if x is nil:
             return nil, interp
-        case None | True | False | int() | float():
+        case None | True | False | int() | float() | str() | Keyword():
             return form, interp
         # TODO: change this to in-ns
         case Cons(Sym(None, 'ns'), Cons(Sym(None, name), _)):
@@ -944,6 +1021,9 @@ def eval_form(form, interp, env):
     raise NotImplementedError(form)
 
 
+# Currently this is doing too much!
+# identifying definitions should be done in a step before expanding
+# and then form simplifying should come later
 def macroexpand_1(form, interp):
     match form:
         case None:
@@ -988,6 +1068,7 @@ def macroexpand_1(form, interp):
             return form, interp
         case Cons(Sym(None, 'if'), _):
             raise SyntaxError(f'invalid special form if: {form}')
+        # TODO: check if definition is macro
         # case ...
         case other:
             return other, interp
