@@ -4,7 +4,7 @@ import dataclasses
 import os
 import sys
 import traceback
-from collections.abc import Sequence, Mapping, Set, Sized, Collection
+from collections.abc import Sequence, Mapping, Sized
 from dataclasses import dataclass
 from functools import reduce
 from itertools import islice
@@ -207,9 +207,7 @@ class ArrayMap(Mapping):
         return len(self.kvs) // 2
 
     def __iter__(self):
-        kvs = self.kvs
-        for i in range(0, len(kvs), 2):
-            yield kvs[i]
+        return islice(self.kvs, 0, sys.maxsize, 2)
 
     def __getitem__(self, key):
         kvs = self.kvs
@@ -244,10 +242,12 @@ class ArrayMap(Mapping):
     def items(self):
         kvs = self.kvs
 
-        class ItemsView(Set):
+        class ItemsView:
             def __iter__(self):
-                for i in range(0, len(kvs), 2):
-                    yield (kvs[i], kvs[i + 1])
+                return zip(
+                    islice(kvs, 0, sys.maxsize, 2),
+                    islice(kvs, 1, sys.maxsize, 2)
+                )
 
             def __len__(self):
                 return len(kvs) // 2
@@ -262,7 +262,7 @@ class ArrayMap(Mapping):
     def values(self):
         kvs = self.kvs
 
-        class ValuesView(Collection):
+        class ValuesView:
             def __len__(self):
                 return len(kvs) // 2
 
@@ -273,8 +273,7 @@ class ArrayMap(Mapping):
                         return True
 
             def __iter__(self):
-                for i in range(1, len(kvs), 2):
-                    yield kvs[i]
+                return islice(kvs, 1, sys.maxsize, 2)
         return ValuesView()
 
     def __str__(self):
