@@ -1,6 +1,11 @@
 (ns pack.core)
-
+;; Logic
 (def not (fn [x] (if x false true)))
+
+(import operator)
+;; Arithmatic
+(def + (fn [a b] ((. operator add) a b)))
+(def - (fn [a b] ((. operator sub) a b)))
 
 ;; vim:ft=clojure:
 

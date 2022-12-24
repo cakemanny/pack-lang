@@ -327,6 +327,8 @@ def test_expand_and_evaluate__3(initial_interpreter):
     assert interp.namespaces['pack.core'].defs['not']
     assert results == [None, Var(Sym('pack.core', 'not'), Any(Fn)), True]
 
+    assert results[1].value.env == Map.empty()
+
 
 class Any:
     def __init__(self, type=None):
@@ -366,14 +368,49 @@ def test_expand_and_evaluate__4(initial_interpreter):
     ]
 
 
-@pytest.mark.skip
 def test_expand_and_evaluate__5(initial_interpreter):
     from interp import Fn
     text = """\
     (ns pack.core)
+    (import builtins)
+    (def str (fn str [arg] ((. builtins str) arg)))
+
     (ns user)
-    (require 'example)
-    example/hello
+    (str 'example)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    import builtins
+    assert results == [
+        None,
+        Var(Sym(None, 'builtins'), builtins),
+        Var(Sym('pack.core', 'str'), Any(Fn)),
+        None,
+        "example",
+    ]
+    assert results[2].value.env == ArrayMap.empty().assoc(
+        Sym(None, 'builtins'), Any(Var)
+    )
+
+
+@pytest.mark.skip
+def test_expand_and_evaluate__6(initial_interpreter):
+    from interp import Fn
+    text = """\
+    (ns pack.core)
+    (import builtins)
+    (def str (fn str [arg] ((. builtins str) arg)))
+
+    ;(def require
+    ;    (fn require [ns-sym]
+    ;        (load-lib (str ns-sym))))
+
+    (ns user)
+    ;(require 'example)
+    ;example/hello
+    (str 'example)
     """
     forms = read_all_forms(text)
 

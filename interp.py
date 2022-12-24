@@ -5,6 +5,7 @@ import os
 import sys
 from collections.abc import Sequence, Mapping, Set, Sized, Collection
 from dataclasses import dataclass
+from functools import reduce
 from itertools import islice
 from typing import Any, Optional
 
@@ -59,6 +60,17 @@ class Nil(List):
 
     def __len__(self):
         return 0
+
+    if False:
+        def __eq__(self, o):
+            if isinstance(o, Nil):
+                return True
+            if o is None:
+                return True
+            return False
+
+        def __hash__(self):
+            return hash(None)
 
 
 nil = Nil()
@@ -460,6 +472,7 @@ class Map(Mapping):
 def is_ident_start(c):
     return (
         'a' <= c <= 'z'
+        or 'A' <= c <= 'Z'
         or c in ('+', '-', '*', '/', '<', '>', '!', '=', '&', '^', '.', '?')
         or '🌀' <= c <= '🫸'
     )
@@ -671,10 +684,14 @@ class EvalError(PackLangError):
 @dataclass(frozen=True)
 class Namespace:
     name: str
-    defs: Mapping = ArrayMap.empty()
+    defs: Mapping = ArrayMap.empty()  # str -> var
+    aliases: Mapping = ArrayMap.empty()  # str -> var | pyvar
 
     def apply_defs(self, f):
-        return Namespace(self.name, f(self.defs))
+        return dataclasses.replace(self, defs=f(self.defs))
+
+    def apply_aliases(self, f):
+        return dataclasses.replace(self, aliases=f(self.aliases))
 
 
 @dataclass(frozen=True)
@@ -698,7 +715,14 @@ class Interpreter:
         # Mutation!
         namespaces['pack.core'].defs['*ns*'].value = ns
 
-        return Interpreter(namespaces)
+        return dataclasses.replace(self, namespaces=namespaces)
+
+    def update_ns(self, ns_name, f):
+        updated_ns = f(self.namespaces[ns_name])
+        namespaces = self.namespaces.assoc(ns_name, updated_ns)
+        if ns_name == namespaces['pack.core'].defs['*ns*'].value.name:
+            namespaces['pack.core'].defs['*ns*'].value = updated_ns
+        return dataclasses.replace(self, namespaces=namespaces)
 
     @property
     def default_ns(self):
@@ -752,7 +776,46 @@ def extract_closure(body, params, interp, env):
     # captured as they are or not... I think the right answer is to
     # do so...
     # TODO
-    return Map.empty()
+    m = Map.empty()  # closure
+    lets = Map.empty()
+
+    def aux(expr, m, lets):
+        match expr:
+            # TODO: don't descend into quote
+            case Sym(None, 'if' | 'def' | 'fn' | 'quote'
+                     | 'true' | 'false' | 'nil'):
+                return m
+            case Sym(None, name) as sym:
+                # Maybe this is also the point to do more macro expanding?
+                if sym in params or sym in lets:
+                    return m
+                if sym in env:
+                    return m.assoc(sym, env[sym])
+                if name in interp.current_ns.defs:
+                    return m.assoc(sym, interp.current_ns.defs[name])
+                if name in interp.current_ns.aliases:
+                    return m.assoc(sym, interp.current_ns.aliases[name])
+                raise EvalError(
+                    f'Could not resolve symbol: {sym!r} in this context'
+                )
+            case Cons(Sym(None, '.'), Cons(obj, Cons(_, Nil()))):
+                # onlt the obj is evaluated, not the attr
+                return aux(obj, m, lets)
+            case Cons(hd, tl):
+                return aux(tl, aux(hd, m, lets), lets)
+            case Vec() as vec:
+                return reduce(lambda m, sub_form: aux(sub_form, m, lets), vec, m)
+            case ArrayMap() | Map() as m:
+                for k, v in m.items():
+                    m = aux(k, m, lets)
+                    m = aux(v, m, lets)
+                return m
+            case str() | int() | float() | bool() | Nil() | None:
+                return m
+            case _:
+                raise NotImplementedError(expr)
+
+    return aux(body, m, lets)
 
 
 def eval_form(form, interp, env):
@@ -761,8 +824,33 @@ def eval_form(form, interp, env):
             return nil, interp
         case None | True | False:
             return form, interp
+        # TODO: change this to in-ns
         case Cons(Sym(None, 'ns'), Cons(Sym(None, name), _)):
             return None, interp.switch_namespace(name)
+        case Cons(Sym(None, 'import'), Cons(Sym(None, name) as sym, _)):
+            _globals = {}
+            _locals = {}
+            exec(f'import {name}', _globals, _locals)
+
+            ns_name = interp.current_ns.name
+            if name in interp.namespaces[ns_name].aliases:
+                var = interp.namespaces[ns_name].aliases[name]
+                # !Mutation!
+                var.value = _locals[name]
+            else:
+                var = Var(sym, _locals[name])
+                interp = interp.update_ns(
+                    ns_name,
+                    lambda ns: ns.apply_aliases(
+                        lambda aliases: aliases.assoc(name, var)
+                    )
+                )
+            return var, interp
+        case Cons(Sym(None, '.'), Cons(obj_expr, Cons(Sym(None, attr), Nil()))):
+            obj, interp = eval_form(obj_expr, interp, env)
+            return getattr(obj, attr), interp
+        case Cons(Sym(None, '.'), _):
+            raise SyntaxError(f'invald member expression: {form}')
 
         case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Cons(init, Nil()))):
             init_val, interp = eval_form(init, interp, env)
@@ -791,6 +879,7 @@ def eval_form(form, interp, env):
             raise SemanticError(
                 f'wrong number of arguments to quote: {len(args)}'
             )
+        # TODO: evaluate numbers in the reader
         case Num(n):
             if '.' in n:
                 return float(n), interp
@@ -807,12 +896,20 @@ def eval_form(form, interp, env):
             return None, interp
         case Sym(None, name) as sym:
             if sym in env:
+                if isinstance(env[sym], Var):
+                    return env[sym].value, interp
                 return env[sym], interp
+
+            # This is actually broken for fns defined in one module
+            # but called in another
             if name in interp.current_ns.defs:
                 return interp.current_ns.defs[name].value, interp
+            if name in interp.current_ns.aliases:
+                return interp.current_ns.aliases[name].value, interp
+            # TODO: put stuff from pack.core into aliases
             if name in interp.default_ns.defs:
                 return interp.default_ns.defs[name].value, interp
-            raise EvalError(f'Could not resolve {sym} in this context')
+            raise EvalError(f'Could not resolve symbol: {sym} in this context')
         case Cons(proc_form, args):
             proc, interp = eval_form(proc_form, interp, env)
 
@@ -821,7 +918,10 @@ def eval_form(form, interp, env):
                 arg_val, interp = eval_form(arg, interp, env)
                 arg_vals.append(arg_val)
             # Assume proc is an Fn
-            return proc(interp, *arg_vals)
+            if isinstance(proc, Fn):
+                return proc(interp, *arg_vals)
+            # python function
+            return proc(*arg_vals), interp
         case ArrayMap() | Map() as m:
             result_m = ArrayMap.empty()
             for k, v in m.items():
@@ -865,11 +965,13 @@ def macroexpand_1(form, interp):
                     'Cannot def symbol outside current ns'
                 )
 
-            return form, Interpreter(
-                interp.namespaces.assoc(
-                    ns_name, interp.namespaces[ns_name].apply_defs(
-                        lambda defs: defs.assoc(name, Var(sym))
-                    )
+            if name in interp.namespaces[ns_name].defs:
+                return form, interp
+
+            return form, interp.update_ns(
+                ns_name,
+                lambda ns: ns.apply_defs(
+                    lambda defs: defs.assoc(name, Var(sym))
                 )
             )
         case Cons(Sym('def'), _):
@@ -880,7 +982,7 @@ def macroexpand_1(form, interp):
         case Cons(Sym(None, 'if'), Cons(_, Cons(_, Cons(_, Nil())))):
             return form, interp
         case Cons(Sym(None, 'if'), _):
-            raise SyntaxError('invalid special form if: {form}')
+            raise SyntaxError(f'invalid special form if: {form}')
         # case ...
         case other:
             return other, interp
@@ -929,7 +1031,7 @@ def main():
             except EOFError:
                 print()
                 exit(0)
-            except SyntaxError as e:
+            except (NotImplementedError, SyntaxError) as e:
                 print(repr(e))
                 continue
 
@@ -940,8 +1042,11 @@ def main():
                 results, interp = expand_and_evaluate_forms(forms, interp)
                 for result in results:
                     print(result)
-            except (NotImplementedError, SemanticError, EvalError) as e:
+            except (NotImplementedError, PackLangError) as e:
                 print(repr(e))
+            except Exception:
+                import traceback
+                traceback.print_exc()
 
     else:
 
