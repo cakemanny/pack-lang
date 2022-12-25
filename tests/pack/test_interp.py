@@ -1,11 +1,11 @@
 import pytest
 
-from interp import (
+from pack.interp import (
     try_read, read_sym, read_num, read_str, read_forms, read_all_forms
 )
-from interp import Unmatched, SyntaxError, Unclosed
-from interp import Sym, Keyword, Vec, ArrayMap, Map, List, Cons, nil
-from interp import Interpreter, Var, expand_and_evaluate_forms
+from pack.interp import Unmatched, SyntaxError, Unclosed
+from pack.interp import Sym, Keyword, Vec, ArrayMap, Map, List, Cons, nil
+from pack.interp import Interpreter, Var, Fn, expand_and_evaluate_forms
 
 NIL = tuple()
 
@@ -279,8 +279,7 @@ def test_read_all_forms__unclosed_file():
 (ns pack.core)
 
 (def not (fn [x] (if x false true))
-
-;; vim:ft=clojure:
+; final closing paren is missing   ^
 """
 
     with pytest.raises(Unclosed):
@@ -290,6 +289,23 @@ def test_read_all_forms__unclosed_file():
 # -------------
 #  Interpreter
 # -------------
+
+
+def test_to_module_path():
+    from pack.interp import to_module_path
+    assert to_module_path('example') == 'example.pack'
+    assert to_module_path('user') == 'user.pack'
+    assert to_module_path('pack.core') == 'pack/core.pack'
+
+    with pytest.raises(ValueError):
+        assert to_module_path('.hi')
+    with pytest.raises(ValueError):
+        assert to_module_path('hi.')
+    with pytest.raises(ValueError):
+        assert to_module_path('')
+    with pytest.raises(ValueError):
+        assert to_module_path('user/example')
+
 
 @pytest.fixture
 def initial_interpreter():
@@ -376,7 +392,6 @@ def test_expand_and_evaluate__2(initial_interpreter):
 
 
 def test_expand_and_evaluate__3(initial_interpreter):
-    from interp import Fn
     text = """\
     (ns pack.core)
     ;(def not)
@@ -407,7 +422,6 @@ class Any:
 
 
 def test_expand_and_evaluate__4(initial_interpreter):
-    from interp import Fn
     text = """\
     (ns pack.core)
 
@@ -435,7 +449,6 @@ def test_expand_and_evaluate__4(initial_interpreter):
 
 
 def test_expand_and_evaluate__5(initial_interpreter):
-    from interp import Fn
     text = """\
     (ns pack.core)
     (import builtins)
@@ -466,9 +479,25 @@ def test_expand_and_evaluate__5(initial_interpreter):
     )
 
 
+def test_expand_and_evaluate__require(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (ns user)
+    (require 'example)
+    example/hello
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'user'
+    assert results
+    assert results[-2:] == [None, 92]
+
+
 @pytest.mark.skip
 def test_expand_and_evaluate__6(initial_interpreter):
-    from interp import Fn
     text = """\
     (ns pack.core)
     (import builtins)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import dataclasses
+import importlib
 import os
 import sys
 import traceback
@@ -8,12 +9,12 @@ from collections.abc import Sequence, Mapping, Sized
 from dataclasses import dataclass
 from functools import reduce
 from itertools import islice
-from typing import Any, Optional
+from typing import Any, Optional, Set, Collection
 
 
-# -------------
-#  Reader
-# -------------
+# ----------------
+#  Data Structures
+# ----------------
 
 
 WHITESPACE = (' ', '\n', '\t', '\v')
@@ -239,7 +240,7 @@ class ArrayMap(Mapping):
 
     # We implement items and values ourselves because the mixins from
     # Mapping would be O(n^2)
-    def items(self):
+    def items(self) -> Set:
         kvs = self.kvs
 
         class ItemsView:
@@ -253,7 +254,7 @@ class ArrayMap(Mapping):
                 return any(item == (k, v) for (k, v) in self)
         return ItemsView()
 
-    def values(self):
+    def values(self) -> Collection:
         kvs = self.kvs
 
         class ValuesView:
@@ -488,11 +489,24 @@ class Map(Mapping):
         return m
 
 
+# -------------
+#  Reader
+# -------------
+
+
+WHITESPACE = (' ', '\n', '\t', '\v')
+
+# Still to do:
+#   #
+#   ^ for metadata
+#   & for restarg and such
+
+
 def is_ident_start(c):
     return (
         'a' <= c <= 'z'
         or 'A' <= c <= 'Z'
-        or c in ('+', '-', '*', '/', '<', '>', '!', '=', '&', '^', '.', '?')
+        or c in ('+', '-', '*', '/', '<', '>', '!', '=', '&', '_', '.', '?')
         or '🌀' <= c <= '🫸'
     )
 
@@ -685,8 +699,9 @@ def try_read(text):
         case ')' | ']' | '}':
             raise Unmatched(c, text[1:])
         case "'":
-            # quote next form
             return read_quoted(text[1:])
+        case "`":
+            raise NotImplementedError("`")
         case '-' | '+' if '0' <= c1 <= '9':
             return read_num(text[1:], c)
         case n if '0' <= n <= '9':
@@ -743,8 +758,8 @@ class EvalError(PackLangError):
 @dataclass(frozen=True)
 class Namespace:
     name: str
-    defs: Mapping = ArrayMap.empty()  # str -> var
-    aliases: Mapping = ArrayMap.empty()  # str -> var | pyvar
+    defs: Map | ArrayMap = ArrayMap.empty()  # str -> var
+    aliases: Map | ArrayMap = ArrayMap.empty()  # str -> var | pyvar
 
     def apply_defs(self, f):
         return dataclasses.replace(self, defs=f(self.defs))
@@ -755,7 +770,7 @@ class Namespace:
 
 @dataclass(frozen=True)
 class Interpreter:
-    namespaces: Mapping  # str -> Namespace
+    namespaces: Map | ArrayMap  # str -> Namespace
 
     def switch_namespace(self, name: str):
         assert isinstance(name, str)
@@ -797,11 +812,13 @@ class Var:
     "This is the mutable thing"
     symbol: Sym
     value: Any
+    metadata: ArrayMap | Map
 
-    def __init__(self, symbol, value=None):
+    def __init__(self, symbol, value=None, metadata=ArrayMap.empty()):
         assert isinstance(symbol, Sym)
         self.symbol = symbol
         self.value = value
+        self.metadata = metadata
 
     def __str__(self):
         return f"#'{self.symbol}"
@@ -841,7 +858,7 @@ def extract_closure(body, params, interp, env):
 
     def aux(expr, m, lets):
         match expr:
-            case Sym(None, 'if' | 'fn' | 'true' | 'false' | 'nil'):
+            case Sym(None, 'if' | 'true' | 'false' | 'nil'):
                 return m
             case Sym(None, name) as sym:
                 # Maybe this is also the point to do more macro expanding?
@@ -889,6 +906,37 @@ def extract_closure(body, params, interp, env):
     return aux(body, m, lets)
 
 
+def to_module_path(module_name):
+    if (len(module_name) == 0
+            or '.' in (module_name[0], module_name[-1])
+            or '/' in module_name):
+        raise ValueError(f'invalid module name: {module_name}')
+
+    with_replaced_seps = os.path.join(*module_name.split('.'))
+    return f'{with_replaced_seps}.pack'
+
+
+def find_module(module_name):
+    module_path = to_module_path(module_name)
+    for base in sys.path:
+        full_path = os.path.join(base, module_path)
+        if os.path.isfile(full_path):
+            return full_path
+
+    details = '\n'.join([
+        f"searched {module_path!r} in the following directories:\n",
+        *sys.path
+    ])
+    raise PackLangError(f'module not found: {details}')
+
+
+def load_module(module_path, interp):
+    with open(module_path) as f:
+        forms = read_all_forms(f.read())
+    _, interp = expand_and_evaluate_forms(forms, interp)
+    return interp
+
+
 def eval_form(form, interp, env):
     match form:
         case x if x is nil:
@@ -898,18 +946,27 @@ def eval_form(form, interp, env):
         # TODO: change this to in-ns
         case Cons(Sym(None, 'ns'), Cons(Sym(None, name), _)):
             return None, interp.switch_namespace(name)
+        case Cons(Sym(None, 'require'), Cons(name_form, _)):
+            name, interp = eval_form(name_form, interp, env)
+            if name.ns is not None:
+                raise SemanticError(
+                    f'module must be a simple name (no /): invalid: {name}'
+                )
+            module_path = find_module(name.n)
+            saved_namespace_name = interp.current_ns.name
+            interp = load_module(module_path, interp)
+            interp = interp.switch_namespace(saved_namespace_name)
+            return None, interp
         case Cons(Sym(None, 'import'), Cons(Sym(None, name) as sym, _)):
-            _globals = {}
-            _locals = {}
-            exec(f'import {name}', _globals, _locals)
+            module = importlib.import_module(name)
 
             ns_name = interp.current_ns.name
             if name in interp.namespaces[ns_name].aliases:
                 var = interp.namespaces[ns_name].aliases[name]
                 # !Mutation!
-                var.value = _locals[name]
+                var.value = module
             else:
-                var = Var(sym, _locals[name])
+                var = Var(sym, module)
                 interp = interp.update_ns(
                     ns_name,
                     lambda ns: ns.apply_aliases(
@@ -947,12 +1004,26 @@ def eval_form(form, interp, env):
             return Fn(name, params, body, closure), interp
         case Cons(Sym(None, 'fn'), _):
             raise SyntaxError(f'invalid fn form: {form}')
+
         case Cons(Sym(None, 'quote'), Cons(arg, Nil())):
             return arg, interp
         case Cons(Sym(None, 'quote'), args):
             raise SemanticError(
                 f'wrong number of arguments to quote: {len(args)}'
             )
+        case Cons(proc_form, args):
+            proc, interp = eval_form(proc_form, interp, env)
+
+            arg_vals = []
+            for arg in args:
+                arg_val, interp = eval_form(arg, interp, env)
+                arg_vals.append(arg_val)
+            # Assume proc is an Fn
+            if isinstance(proc, Fn):
+                return proc(interp, *arg_vals)
+            # python function
+            return proc(*arg_vals), interp
+
         case Sym(ns_name, name) if ns_name is not None:
             var = interp.namespaces[ns_name].defs[name]
             assert isinstance(var, Var)
@@ -979,18 +1050,7 @@ def eval_form(form, interp, env):
             if name in interp.default_ns.defs:
                 return interp.default_ns.defs[name].value, interp
             raise EvalError(f'Could not resolve symbol: {sym} in this context')
-        case Cons(proc_form, args):
-            proc, interp = eval_form(proc_form, interp, env)
 
-            arg_vals = []
-            for arg in args:
-                arg_val, interp = eval_form(arg, interp, env)
-                arg_vals.append(arg_val)
-            # Assume proc is an Fn
-            if isinstance(proc, Fn):
-                return proc(interp, *arg_vals)
-            # python function
-            return proc(*arg_vals), interp
         case ArrayMap() | Map() as m:
             result_m = ArrayMap.empty()
             for k, v in m.items():
@@ -1070,18 +1130,11 @@ def macroexpand(form, interp):
 
 
 def expand_and_evaluate_forms(forms, interp):
-    # TODO: macro expand
 
-    # Expands forms...
-    expanded_forms = []
+    results = []
     for form in forms:
         expanded, interp = macroexpand(form, interp)
-        expanded_forms.append(expanded)
-
-    # TODO: Evaluate forms
-    results = []
-    for form in expanded_forms:
-        result, interp = eval_form(form, interp, Map.empty())
+        result, interp = eval_form(expanded, interp, Map.empty())
         results.append(result)
     return results, interp
 
@@ -1090,9 +1143,7 @@ def main():
 
     interp = Interpreter(Map.empty())
 
-    with open('core.pack') as f:
-        forms = read_all_forms(f.read())
-    _, interp = expand_and_evaluate_forms(forms, interp)
+    interp = load_module(find_module('pack.core'), interp)
 
     _, interp = expand_and_evaluate_forms(read_all_forms("(ns user)"), interp)
 
