@@ -207,7 +207,7 @@ class ArrayMap(Mapping):
         return len(self.kvs) // 2
 
     def __iter__(self):
-        return islice(self.kvs, 0, sys.maxsize, 2)
+        return islice(self.kvs, 0, None, 2)
 
     def __getitem__(self, key):
         kvs = self.kvs
@@ -244,19 +244,13 @@ class ArrayMap(Mapping):
 
         class ItemsView:
             def __iter__(self):
-                return zip(
-                    islice(kvs, 0, sys.maxsize, 2),
-                    islice(kvs, 1, sys.maxsize, 2)
-                )
+                return take_pairs(kvs)
 
             def __len__(self):
                 return len(kvs) // 2
 
             def __contains__(self, item):
-                for i in range(0, len(kvs), 2):
-                    if item == (kvs[i], kvs[i + 1]):
-                        return True
-                return False
+                return any(item == (k, v) for (k, v) in self)
         return ItemsView()
 
     def values(self):
@@ -267,13 +261,13 @@ class ArrayMap(Mapping):
                 return len(kvs) // 2
 
             def __contains__(self, value):
-                for i in range(1, len(kvs), 2):
-                    v = kvs[i]
+                for v in iter(self):
                     if v is value or v == value:
                         return True
+                return False
 
             def __iter__(self):
-                return islice(kvs, 1, sys.maxsize, 2)
+                return islice(kvs, 1, None, 2)
         return ValuesView()
 
     def __str__(self):
@@ -312,11 +306,14 @@ class ArrayMap(Mapping):
 
     @classmethod
     def from_iter(cls, it):
-        # NB: This is not dealing with duplicates currently
         def aux():
+            seen = set()
+            seen_add = seen.add
             for k, v in it:
-                yield k
-                yield v
+                if k not in seen:
+                    seen_add(k)
+                    yield k
+                    yield v
         return cls(tuple(aux()))
 
 
@@ -368,7 +365,7 @@ class Map(Mapping):
 
     def __iter__(self):
         for i, x in enumerate(self.xs):
-            if (self.kindset & (1 << i)):
+            if self._is_leaf(i):
                 yield x[0]
             elif x is not None:
                 for k in x:
@@ -608,17 +605,8 @@ def read_comment(text):
 
 def take_pairs(xs):
     "yield pairs from an even length iterable: ABCDEF -> AB CD EF"
-    i = 0
-    a = None
-    for x in xs:
-        if i == 0:
-            a = x
-            i = 1
-        else:
-            yield (a, x)
-            i = 0
-    if i != 0:
-        raise ValueError('odd length input')
+    # See https://docs.python.org/3/library/functions.html#zip Tips and tricks
+    return zip(it := iter(xs), it, strict=True)
 
 
 def close_sequence(opener, elements):
