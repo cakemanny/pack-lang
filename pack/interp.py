@@ -79,6 +79,9 @@ class Nil(List):
     def __len__(self):
         return 0
 
+    def __iter__(self):
+        yield from ()
+
     if False:
         def __eq__(self, o):
             if isinstance(o, Nil):
@@ -499,7 +502,6 @@ WHITESPACE = (' ', '\n', '\t', '\v')
 # Still to do:
 #   #
 #   ^ for metadata
-#   & for restarg and such
 
 
 def is_ident_start(c):
@@ -759,7 +761,7 @@ class EvalError(PackLangError):
 class Namespace:
     name: str
     defs: Map | ArrayMap = ArrayMap.empty()  # str -> var
-    aliases: Map | ArrayMap = ArrayMap.empty()  # str -> var | pyvar
+    aliases: Map | ArrayMap = ArrayMap.empty()  # str -> var
 
     def apply_defs(self, f):
         return dataclasses.replace(self, defs=f(self.defs))
@@ -806,6 +808,21 @@ class Interpreter:
     def current_ns(self):
         return self.namespaces['pack.core'].defs['*ns*'].value
 
+    def resolve_symbol(self, sym, env):
+        if sym in env:
+            if isinstance(env[sym], Var):
+                return env[sym]
+            raise SemanticError('{sym} is not a var')
+        ns_name = sym.ns or self.current_ns.name
+        try:
+            ns = self.namespaces[ns_name]
+        except KeyError:
+            raise EvalError(f"no such namespace {ns_name}")
+        try:
+            return ns.defs[sym.n]
+        except KeyError:
+            raise EvalError(f'{sym!r} not found in this context')
+
 
 @dataclass
 class Var:
@@ -825,6 +842,24 @@ class Var:
 
     def __repr__(self):
         return str(self)
+
+
+KW_MACRO = Keyword(None, "macro")
+
+
+def set_macro(var):
+    var.metadata = var.metadata.assoc(KW_MACRO, True)
+
+
+def is_macro(sym, interp, env):
+    try:
+        var = interp.resolve_symbol(sym, env)
+    except PackLangError:
+        return False
+    try:
+        return var.metadata.get(KW_MACRO)
+    except AttributeError:
+        return False
 
 
 class Fn:
@@ -858,7 +893,11 @@ def extract_closure(body, params, interp, env):
 
     def aux(expr, m, lets):
         match expr:
-            case Sym(None, 'if' | 'true' | 'false' | 'nil'):
+            case Sym(None, 'true' | 'false' | 'nil'):
+                return m
+            # The arguments for if and raise are evaluated, so
+            # can just be treated like functions here
+            case Sym(None, 'if' | 'raise' | 'var'):
                 return m
             case Sym(None, name) as sym:
                 # Maybe this is also the point to do more macro expanding?
@@ -875,6 +914,7 @@ def extract_closure(body, params, interp, env):
                 raise EvalError(
                     f'Could not resolve symbol: {sym!r} in this context'
                 )
+            # Special forms
             case Cons(Sym(None, '.'), Cons(obj, Cons(_, Nil()))):
                 # onlt the obj is evaluated, not the attr
                 return aux(obj, m, lets)
@@ -888,6 +928,7 @@ def extract_closure(body, params, interp, env):
                 return aux(body, m, lets)
             case Cons(Sym(None, 'quote'), _):
                 return m
+
             case Cons(hd, tl):
                 m = aux(hd, m, lets)
                 return aux(tl, m, lets)
@@ -946,6 +987,9 @@ def eval_form(form, interp, env):
         # TODO: change this to in-ns
         case Cons(Sym(None, 'ns'), Cons(Sym(None, name), _)):
             return None, interp.switch_namespace(name)
+        case Cons(Sym(None, 'ns'), _):
+            raise SemanticError('ns expects a symbol as argument')
+
         case Cons(Sym(None, 'require'), Cons(name_form, _)):
             name, interp = eval_form(name_form, interp, env)
             if name.ns is not None:
@@ -957,6 +1001,7 @@ def eval_form(form, interp, env):
             interp = load_module(module_path, interp)
             interp = interp.switch_namespace(saved_namespace_name)
             return None, interp
+
         case Cons(Sym(None, 'import'), Cons(Sym(None, name) as sym, _)):
             module = importlib.import_module(name)
 
@@ -974,6 +1019,7 @@ def eval_form(form, interp, env):
                     )
                 )
             return var, interp
+
         case Cons(Sym(None, '.'), Cons(obj_expr, Cons(Sym(None, attr), Nil()))):
             obj, interp = eval_form(obj_expr, interp, env)
             return getattr(obj, attr), interp
@@ -986,6 +1032,12 @@ def eval_form(form, interp, env):
             # !Mutation!
             var.value = init_val
             return var, interp
+
+        # case Cons(Sym(None, 'defmacro'),
+        #           Cons(Sym(None, name),
+        #                Cons(Vec() as paramspec, Cons(body, Nil())))):
+        #     #
+        #     return
         case Cons(Sym(None, 'if'),
                   Cons(predicate,
                        Cons(consequent, Cons(alternative, Nil())))):
@@ -993,6 +1045,13 @@ def eval_form(form, interp, env):
             if p:
                 return eval_form(consequent, interp, env)
             return eval_form(alternative, interp, env)
+        case Cons(Sym(None, 'if'), Cons(predicate, Cons(consequent, Nil()))):
+            p, interp = eval_form(predicate, interp, env)
+            if p:
+                return eval_form(consequent, interp, env)
+            return None, interp
+        case Cons(Sym(None, 'if')):
+            raise SyntaxError(f'something is wrong with this if: {form}')
 
         case Cons(Sym(None, 'fn'), Cons(Vec() as params, Cons(body, Nil()))):
             closure = extract_closure(body, params, interp, env)
@@ -1005,12 +1064,33 @@ def eval_form(form, interp, env):
         case Cons(Sym(None, 'fn'), _):
             raise SyntaxError(f'invalid fn form: {form}')
 
+        case Cons(Sym(None, 'raise'), Cons(raisable_form, Nil() | None)):
+            raisable, interp = eval_form(raisable_form, interp, env)
+            raise raisable
+        case Cons(Sym(None, 'raise')):
+            raise SyntaxError(f"invalid special form 'raise': {form}")
+
         case Cons(Sym(None, 'quote'), Cons(arg, Nil())):
             return arg, interp
         case Cons(Sym(None, 'quote'), args):
             raise SemanticError(
                 f'wrong number of arguments to quote: {len(args)}'
             )
+
+        case Cons(Sym(None, 'var'), Cons(Sym() as sym, Nil() | None)):
+            var = interp.resolve_symbol(sym, env)
+            return var, interp
+        case Cons(Sym(None, 'var'), _):
+            raise SemanticError(
+                f'invalid special form var: var takes 1 symbol as argument: {form}'
+            )
+
+        case Cons(Sym() as sym, args) if is_macro(sym, interp, env):
+            # TODO: maybe this is the point we should be calling macroexpand...
+            proc, interp = eval_form(sym, interp, env)
+            assert isinstance(proc, Fn)
+            expanded_form, interp = proc(interp, *list(args))
+            return eval_form(expanded_form, interp, env)
         case Cons(proc_form, args):
             proc, interp = eval_form(proc_form, interp, env)
 
@@ -1024,10 +1104,11 @@ def eval_form(form, interp, env):
             # python function
             return proc(*arg_vals), interp
 
-        case Sym(ns_name, name) if ns_name is not None:
-            var = interp.namespaces[ns_name].defs[name]
-            assert isinstance(var, Var)
-            return var.value, interp
+        case Sym(ns_name, name) as sym if ns_name is not None:
+            var = interp.resolve_symbol(sym, env)
+            if isinstance(var, Var):
+                return var.value, interp
+            return var, interp
         case Sym(None, 'true'):
             return True, interp
         case Sym(None, 'false'):
@@ -1075,10 +1156,6 @@ def macroexpand_1(form, interp):
     match form:
         case None:
             return None, interp
-        case Cons(Sym(None, 'ns'), Cons(Sym(None, name), _)):
-            return form, interp.switch_namespace(name)
-        case Cons(Sym(None, 'ns'), _):
-            raise SemanticError('ns expects a symbol as argument')
 
         case Cons(Sym(None, 'def') as deff, Cons(Sym(_, _) as sym, Nil())):
             return Cons(deff, Cons(sym, Cons(None, nil))), interp
@@ -1106,15 +1183,27 @@ def macroexpand_1(form, interp):
                     lambda defs: defs.assoc(name, Var(sym))
                 )
             )
-        case Cons(Sym('def'), _):
+        case Cons(Sym(None, 'def'), _):
             raise SemanticError('def expects a symbol as argument')
 
-        case Cons(Sym(None, 'if'), Cons(p, Cons(c, Nil()))):
-            return Cons(Sym(None, 'if'), Cons(p, Cons(c, Cons(None, nil)))), interp
-        case Cons(Sym(None, 'if'), Cons(_, Cons(_, Cons(_, Nil())))):
-            return form, interp
-        case Cons(Sym(None, 'if'), _):
-            raise SyntaxError(f'invalid special form if: {form}')
+        case Cons(Sym(None, 'defmacro'),
+                  Cons(Sym(None, name),
+                       Cons(Vec(), Cons(_, Nil())))):
+            if name in interp.current_ns.defs:
+                return form, interp
+            ns_name = interp.current_ns.name
+            var = Var(
+                Sym(ns_name, name), None,
+                ArrayMap.empty().assoc(KW_MACRO, True)
+            )
+            return form, interp.update_ns(
+                ns_name,
+                lambda ns: ns.apply_defs(
+                    lambda defs: defs.assoc(name, var)
+                )
+            )
+        case Cons(Sym(None, 'defmacro')):
+            raise SyntaxError(f"invalid special form 'defmacro': {form}")
         # TODO: check if definition is macro
         # case ...
         case other:

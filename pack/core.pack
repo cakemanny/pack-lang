@@ -4,8 +4,8 @@
 
 (import operator)
 ;; Arithmatic
-(def + (fn [a b] ((. operator add) a b)))
-(def - (fn [a b] ((. operator sub) a b)))
+(def + (. operator add))
+(def - (. operator sub))
 
 ;; vim:ft=clojure:
 

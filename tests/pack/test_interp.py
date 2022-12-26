@@ -45,6 +45,9 @@ def test_read_sym():
 
     assert read_sym('py/sys.stdin') == (Sym('py', 'sys.stdin'), '')
 
+    # lambda-list keywords are symbols
+    assert read_sym('&rest') == (Sym(None, '&rest'), '')
+
 
 def test_read_num():
     assert read_num('1') == (1, '')
@@ -527,3 +530,85 @@ def test_expand_and_evaluate__6(initial_interpreter):
         None,
         True,
     ]
+
+
+def test_expand_and_evaluate__raise(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (ns user)
+    (import builtins)
+    (raise ((. builtins Exception) "hurray"))
+    """
+    forms = read_all_forms(text)
+
+    with pytest.raises(Exception) as exc_info:
+        results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+    assert 'hurray' in str(exc_info.value)
+
+
+def test_expand_and_evaluate__raise__error(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (ns user)
+    (raise)
+    """
+    forms = read_all_forms(text)
+
+    with pytest.raises(SyntaxError):
+        results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+
+def test_defmacro(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (import builtins)
+
+    (def error
+        (fn [msg]
+            (raise ((. builtins Exception) msg))))
+    (import operator)
+    (def + (. operator add))
+
+    (import pack.interp)
+    (def List (. pack.interp List))
+    (def Cons (. pack.interp Cons))
+    (def nil (. pack.interp nil))
+
+    (def list?
+        (fn
+            [x]
+            ((. builtins isinstance) x List)))
+    (def list
+        (fn [x y z]
+            (Cons x (Cons y (Cons z nil)))))
+    (def first
+        (fn [xs]
+            (if (list? xs)
+                (. xs hd))))
+    (def rest
+        (fn [xs]
+            (if (list? xs)
+                (. xs tl))))
+
+    (ns user)
+
+    (def ->
+        (fn
+            [value proc]
+            (if (list? proc)
+                (list (first proc) value (first (rest proc)))
+                (error "second argument to -> must be an s-expr"))))
+    (import pack.interp)
+    ((. pack.interp set_macro) (var ->))
+
+    (-> 7
+        (+ 7))
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'user'
+    assert results
+    assert results[-2:] == [None, 14]
