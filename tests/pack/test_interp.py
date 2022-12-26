@@ -558,6 +558,42 @@ def test_expand_and_evaluate__raise__error(initial_interpreter):
         results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
 
 
+def test_expand_and_evaluate__let(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (let* [x 1] x)
+    (let* [x 1 y 2] [x y])
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert results == [None, 1, Vec([1, 2])]
+
+
+def test_expand_and_evaluate__let__error(initial_interpreter):
+
+    with pytest.raises(SyntaxError):
+        results, interp = expand_and_evaluate_forms(
+            read_all_forms("""\
+            (ns pack.core)
+            (let* [x 1 y] [x y])
+            """),
+            initial_interpreter
+        )
+
+    with pytest.raises(SyntaxError):
+        results, interp = expand_and_evaluate_forms(
+            read_all_forms("""\
+            (ns pack.core)
+            (let* [{:a a} {:a 1}] [x y])
+            """),
+            initial_interpreter
+        )
+
+
 def test_defmacro(initial_interpreter):
     text = """\
     (ns pack.core)

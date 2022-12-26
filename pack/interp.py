@@ -1033,11 +1033,21 @@ def eval_form(form, interp, env):
             var.value = init_val
             return var, interp
 
-        # case Cons(Sym(None, 'defmacro'),
-        #           Cons(Sym(None, name),
-        #                Cons(Vec() as paramspec, Cons(body, Nil())))):
-        #     #
-        #     return
+        case Cons(Sym(None, 'let*'), Cons(Vec() as bindings, Cons(body))):
+            if len(bindings) % 2 != 0:
+                raise SyntaxError('uneven number of forms in let bindings')
+
+            for binding, init in take_pairs(bindings):
+                if not isinstance(binding, Sym) or binding.ns is not None:
+                    raise SyntaxError(
+                        f'let* does not support destructuring: problem: {binding}'
+                    )
+                init_val, interp = eval_form(init, interp, env)
+                env = env.assoc(binding, init_val)
+            return eval_form(body, interp, env)
+        case Cons(Sym(None, 'let*'), _):
+            raise SyntaxError(f"invalid let: {form}")
+
         case Cons(Sym(None, 'if'),
                   Cons(predicate,
                        Cons(consequent, Cons(alternative, Nil())))):
@@ -1186,24 +1196,6 @@ def macroexpand_1(form, interp):
         case Cons(Sym(None, 'def'), _):
             raise SemanticError('def expects a symbol as argument')
 
-        case Cons(Sym(None, 'defmacro'),
-                  Cons(Sym(None, name),
-                       Cons(Vec(), Cons(_, Nil())))):
-            if name in interp.current_ns.defs:
-                return form, interp
-            ns_name = interp.current_ns.name
-            var = Var(
-                Sym(ns_name, name), None,
-                ArrayMap.empty().assoc(KW_MACRO, True)
-            )
-            return form, interp.update_ns(
-                ns_name,
-                lambda ns: ns.apply_defs(
-                    lambda defs: defs.assoc(name, var)
-                )
-            )
-        case Cons(Sym(None, 'defmacro')):
-            raise SyntaxError(f"invalid special form 'defmacro': {form}")
         # TODO: check if definition is macro
         # case ...
         case other:
