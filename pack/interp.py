@@ -159,7 +159,7 @@ def batched(iterable, n):
         yield batch
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Vec(Sequence):
     """
     A Trie with at most 32 elements in each node
@@ -167,26 +167,27 @@ class Vec(Sequence):
     xs: tuple[Any | 'Vec']
     height: int
 
-    def __post_init__(self):
-        if self.height == 0:
-            self._len = len(self.xs)
-        else:
-            self._len = sum((len(subnode) for subnode in self.xs), 0)
-
-    def is_leaf(self):
+    # A classic sign that this should be split into two different
+    # subclasses Leaf and non-leaf Node
+    def _is_leaf(self):
         return self.height == 0
 
     def __len__(self):
-        return self._len
+        # O(log32(n))
+        if self._is_leaf():
+            return len(self.xs)
+        # Since vectors are contiguous, we just need to look at the
+        # final subnode
+        return (1 << (5 * self.height)) * (len(self.xs) - 1) + len(self.xs[-1])
 
     def __getitem__(self, idx: int):
         # TODO: accept slices
         if idx < 0:
-            return self[self._len + idx]
-        if idx >= self._len:
+            return self[len(self) + idx]
+        if idx >= len(self):
             raise IndexError('vector index out of range')
 
-        if self.is_leaf():
+        if self._is_leaf():
             return self.xs[idx]
 
         subvec_idx = idx >> (5 * self.height)
@@ -202,7 +203,7 @@ class Vec(Sequence):
         return '[' + ' '.join(map(str, self)) + ']'
 
     def __repr__(self):
-        if self.is_leaf():
+        if self._is_leaf():
             return str(self)
         return '[' + ' '.join(map(str, (
             self[0], self[1], self[2],
