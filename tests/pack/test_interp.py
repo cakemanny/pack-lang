@@ -259,6 +259,10 @@ def test_hamt_2():
 def test_try_read__reader_macros():
     assert try_read("'(1 2)") == try_read("(quote (1 2))")
 
+    assert try_read("`(1 2)") == try_read("(quasiquote (1 2))")
+    assert try_read("`(a ~b)") == try_read("(quasiquote (a (unquote b)))")
+    assert try_read("`(a ~@b)") == try_read("(quasiquote (a (unquote-splicing b)))")
+
 
 @pytest.mark.parametrize('line_values,expected_forms', [
     (['1'], (1,)),
@@ -315,7 +319,7 @@ def initial_interpreter():
     return Interpreter(Map.empty())
 
 
-def test_expand_and_evaluate__1(initial_interpreter):
+def test_expand_and_evaluate__ns(initial_interpreter):
     text = """\
     (ns pack.core)
     """
@@ -333,6 +337,7 @@ def test_expand_and_evaluate__syntax(initial_interpreter):
     text = """\
     (ns pack.core)
     :a-keyword
+    'a-symbol
     "a string"
     -1
     +1
@@ -350,9 +355,50 @@ def test_expand_and_evaluate__syntax(initial_interpreter):
     assert results == [
         None,
         Keyword(None, 'a-keyword'),
+        Sym(None, 'a-symbol'),
         "a string",
         -1, 1, -1.2, 1.2, Vec([1, 2, 3]),
         Map.empty().assoc(Keyword(None, 'a'), 1).assoc(Keyword(None, 'b'), 2)
+    ]
+
+
+def test_expand_quasi_quotes(initial_interpreter):
+    from pack.interp import expand_quasi_quotes
+
+    forms = read_all_forms("""(ns pack.core)""")
+    _, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    form = read_all_forms(" `~a ")[0]
+    expanded = expand_quasi_quotes(form, interp)
+
+    assert expanded == read_all_forms("a")[0]
+
+    form = read_all_forms(" `(a b) ")[0]
+    expanded = expand_quasi_quotes(form, interp)
+
+    assert expanded == read_all_forms(
+        "(pack.core/concat (list (quote pack.core/a)) (list (quote pack.core/b)))"
+    )[0]
+
+
+@pytest.mark.skip
+def test_expand_and_evaluate__quoting(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    `a
+    `(a b c)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert results == [
+        None,
+        read_all_forms("pack.core/a")[0],
+        read_all_forms("(pack.core/a pack.core/b pack.core/c)")[0],
+        # Cons(Sym('pack.core', 'a'),
+        #      Cons(Sym('pack.core', 'b'),
+        #           Cons(Sym('pack.core', 'c'))))
     ]
 
 
@@ -380,7 +426,7 @@ def test_expand_and_evaluate__functionality(initial_interpreter):
     ]
 
 
-def test_expand_and_evaluate__2(initial_interpreter):
+def test_expand_and_evaluate__if(initial_interpreter):
     text = """\
     (ns pack.core)
     (if 1 2)
@@ -394,10 +440,9 @@ def test_expand_and_evaluate__2(initial_interpreter):
     assert results == [None, 2]
 
 
-def test_expand_and_evaluate__3(initial_interpreter):
+def test_expand_and_evaluate__def_var_fn(initial_interpreter):
     text = """\
     (ns pack.core)
-    ;(def not)
 
     (def not (fn not [x] (if x false true)))
     (not false)
@@ -422,6 +467,51 @@ class Any:
         if self.type is not None:
             return isinstance(o, self.type)
         return True
+
+
+def test_expand_and_evaluate__fn_rest_args(initial_interpreter):
+    text = """\
+    (ns pack.core)
+
+    (def first (fn [xs] (. xs hd)))
+    (def rest (fn [xs] (. xs tl)))
+    (def null? (fn [lst] (if lst false true)))
+    (def foldl
+        (fn [func accum lst]
+            (if (null? lst)
+                accum
+                (foldl func (func accum (first lst)) (rest lst)))))
+
+    (import operator)
+
+    (def +
+        (fn [& numbers]
+            (foldl (. operator add) 0 numbers)))
+    (+ 1 2 3 4)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+    assert results[-1] == 10
+
+
+def test_expand_and_evaluate__redefining(initial_interpreter):
+    # Being able to redefine stuff in the repl can be useful
+    text = """\
+    (ns pack.core)
+
+    (def x 20)
+    (def y (fn [] x))
+    (y) ; 20
+    (def x 40)
+    (y) ; 40
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert results[-3] == 20
+    assert results[-1] == 40
 
 
 def test_expand_and_evaluate__4(initial_interpreter):
@@ -451,7 +541,7 @@ def test_expand_and_evaluate__4(initial_interpreter):
     ]
 
 
-def test_expand_and_evaluate__5(initial_interpreter):
+def test_expand_and_evaluate__import_nested_fn(initial_interpreter):
     text = """\
     (ns pack.core)
     (import builtins)
@@ -497,39 +587,6 @@ def test_expand_and_evaluate__require(initial_interpreter):
     assert interp.current_ns.name == 'user'
     assert results
     assert results[-2:] == [None, 92]
-
-
-@pytest.mark.skip
-def test_expand_and_evaluate__6(initial_interpreter):
-    text = """\
-    (ns pack.core)
-    (import builtins)
-    (def str (fn str [arg] ((. builtins str) arg)))
-
-    ;(def require
-    ;    (fn require [ns-sym]
-    ;        (load-lib (str ns-sym))))
-
-    (ns user)
-    ;(require 'example)
-    ;example/hello
-    (str 'example)
-    """
-    forms = read_all_forms(text)
-
-    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
-
-    assert 'pack.core' in interp.namespaces
-    assert interp.current_ns.name == 'user'
-    assert interp.namespaces['pack.core'].defs['not']
-    assert results == [
-        None,
-        Var(Sym('pack.core', 'not'), Any(Fn)),
-        Map.empty().assoc(True, 1).assoc(False, 0),
-        Vec([1, 2, 3, False]),
-        None,
-        True,
-    ]
 
 
 def test_expand_and_evaluate__raise(initial_interpreter):
@@ -648,3 +705,24 @@ def test_defmacro(initial_interpreter):
     assert interp.current_ns.name == 'user'
     assert results
     assert results[-2:] == [None, 14]
+
+
+@pytest.mark.skip
+def test_expand_and_evaluate__refer(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (ns example)
+    (def xxx 5)
+    (ns user)
+    (refer 'example)
+    xxx
+    (var xxx)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert results[-2] == [
+        5,
+        Var(Sym('example', 'xxx'), Any(Fn))
+    ]

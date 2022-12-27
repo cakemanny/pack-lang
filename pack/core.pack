@@ -6,6 +6,7 @@
 ;; Arithmatic
 (def + (. operator add))
 (def - (. operator sub))
+(def * (. operator mul))
+(def / (. operator truediv))
 
 ;; vim:ft=clojure:
-

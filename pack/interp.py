@@ -7,7 +7,7 @@ import sys
 import traceback
 from collections.abc import Sequence, Mapping, Sized
 from dataclasses import dataclass
-from functools import reduce
+from functools import reduce, partial
 from itertools import islice
 from typing import Any, Optional, Set, Collection
 
@@ -15,9 +15,6 @@ from typing import Any, Optional, Set, Collection
 # ----------------
 #  Data Structures
 # ----------------
-
-
-WHITESPACE = (' ', '\n', '\t', '\v')
 
 
 @dataclass(frozen=True, slots=True)
@@ -655,11 +652,27 @@ def read_list(opener, text, closing):
             raise
 
 
-def read_quoted(text):
+def read_quoted_like(text, macro, prefix):
     to_quote, remaining = try_read(text)
     if to_quote is None:
-        raise Unclosed("'", remaining)
-    return Cons(Sym(None, 'quote'), Cons(to_quote, nil)), remaining
+        raise Unclosed(prefix, remaining)
+    return Cons(Sym(None, macro), Cons(to_quote, nil)), remaining
+
+
+def read_quoted(text):
+    return read_quoted_like(text, 'quote', "'")
+
+
+def read_quasiquoted(text):
+    return read_quoted_like(text, 'quasiquote', "`")
+
+
+def read_unquote(text):
+    return read_quoted_like(text, 'unquote', "~")
+
+
+def read_unquote_splicing(text):
+    return read_quoted_like(text, 'unquote-splicing', "~@")
 
 
 class PackLangError(Exception):
@@ -703,7 +716,11 @@ def try_read(text):
         case "'":
             return read_quoted(text[1:])
         case "`":
-            raise NotImplementedError("`")
+            return read_quasiquoted(text[1:])
+        case "~" if c1 == "@":
+            return read_unquote_splicing(text[2:])
+        case "~":
+            return read_unquote(text[1:])
         case '-' | '+' if '0' <= c1 <= '9':
             return read_num(text[1:], c)
         case n if '0' <= n <= '9':
@@ -817,11 +834,11 @@ class Interpreter:
         try:
             ns = self.namespaces[ns_name]
         except KeyError:
-            raise EvalError(f"no such namespace {ns_name}")
+            raise EvalError(f"no such namespace {ns_name}") from None
         try:
             return ns.defs[sym.n]
         except KeyError:
-            raise EvalError(f'{sym!r} not found in this context')
+            raise EvalError(f'{sym!r} not found in this context') from None
 
 
 @dataclass
@@ -866,16 +883,27 @@ class Fn:
     def __init__(self, name, params, body, env):
         assert isinstance(params, Vec)
         self.name = name
-        self.params = params
+        self.params, self.restparam = self._split_params(params)
         self.body = body
         self.env = env
 
+    def _split_params(self, params: Vec):
+        if Sym(None, '&') not in params:
+            return params, None
+        idx = params.index(Sym(None, '&'))
+        new_params = [params[i] for i in range(0, idx)]
+        restparam = params[idx + 1]
+        return new_params, restparam
+
     def __call__(self, interp, *args):
-        if len(args) != len(self.params):
+        if not self.restparam and len(args) != len(self.params):
             raise EvalError('incorrect number of arguments')
         env = self.env
         for p, arg in zip(self.params, args):
             env = env.assoc(p, arg)
+        if self.restparam:
+            restargs = args[len(self.params):]
+            env = env.assoc(self.restparam, List.from_iter(restargs))
         return eval_form(self.body, interp, env)
 
     def __repr__(self):
@@ -1114,17 +1142,13 @@ def eval_form(form, interp, env):
             # python function
             return proc(*arg_vals), interp
 
-        case Sym(ns_name, name) as sym if ns_name is not None:
-            var = interp.resolve_symbol(sym, env)
-            if isinstance(var, Var):
-                return var.value, interp
-            return var, interp
         case Sym(None, 'true'):
             return True, interp
         case Sym(None, 'false'):
             return False, interp
         case Sym(None, 'nil'):
             return None, interp
+
         case Sym(None, name) as sym:
             if sym in env:
                 if isinstance(env[sym], Var):
@@ -1141,6 +1165,11 @@ def eval_form(form, interp, env):
             if name in interp.default_ns.defs:
                 return interp.default_ns.defs[name].value, interp
             raise EvalError(f'Could not resolve symbol: {sym} in this context')
+        case Sym(ns_name, name) as sym:
+            var = interp.resolve_symbol(sym, env)
+            if isinstance(var, Var):
+                return var.value, interp
+            return var, interp
 
         case ArrayMap() | Map() as m:
             result_m = ArrayMap.empty()
@@ -1164,8 +1193,6 @@ def eval_form(form, interp, env):
 # and then form simplifying should come later
 def macroexpand_1(form, interp):
     match form:
-        case None:
-            return None, interp
 
         case Cons(Sym(None, 'def') as deff, Cons(Sym(_, _) as sym, Nil())):
             return Cons(deff, Cons(sym, Cons(None, nil))), interp
@@ -1178,7 +1205,7 @@ def macroexpand_1(form, interp):
             try:
                 ns = interp.namespaces[ns_name]
             except KeyError:
-                raise SemanticError(f'No such namespace {ns_name!r}')
+                raise SemanticError(f'No such namespace {ns_name!r}') from None
             if ns_name != interp.current_ns.name:
                 raise SemanticError(
                     'Cannot def symbol outside current ns'
@@ -1210,11 +1237,58 @@ def macroexpand(form, interp):
         form = new_form
 
 
+def expanding_quasi_quotes(form, interp):
+    def quote_form(form):
+        return Cons(Sym(None, 'quote'), Cons(form, nil))
+    match form:
+        case Sym(None, 'ns' | 'require' | 'import'):
+            return quote_form(form)
+        case Sym(None, '.' | 'def' | 'let*' | 'if' | 'fn' | 'raise' | 'quote' | 'var'):
+            return quote_form(form)
+        case Sym(None, name) as sym:
+            try:
+                var = interp.resolve_symbol(sym, ArrayMap.empty())
+                if isinstance(var, Var):
+                    return quote_form(var.symbol)
+                raise NotImplementedError
+            except EvalError:
+                return quote_form(Sym(interp.current_ns.name, name))
+        case Cons(Sym(None, 'unquote'), Cons(x, Nil())):
+            return x
+        case Nil():
+            return nil
+        case Cons() as lst:
+            def f(form):
+                match form:
+                    case Cons('unquote-splicing', Cons(x, Nil())):
+                        return x
+                return Cons(Sym(None, 'list'),
+                            Cons(expanding_quasi_quotes(form, interp), nil))
+            return Cons(Sym('pack.core', 'concat'),
+                        List.from_iter(map(f, lst)))
+        # TODO: vecotrs and maps too
+        case other:
+            return other
+
+
+def expand_quasi_quotes(form, interp):
+    match form:
+        case Cons(Sym(None, 'quasiquote'), Cons(quoted_form, Nil())):
+            return expanding_quasi_quotes(quoted_form, interp)
+        case Cons() as lst:
+            f = partial(expand_quasi_quotes, interp=interp)
+            return List.from_iter(map(f, lst))
+        # TODO: vecotrs and maps too
+        case other:
+            return other
+
+
 def expand_and_evaluate_forms(forms, interp):
 
     results = []
     for form in forms:
-        expanded, interp = macroexpand(form, interp)
+        form0 = expand_quasi_quotes(form, interp)
+        expanded, interp = macroexpand(form0, interp)
         result, interp = eval_form(expanded, interp, Map.empty())
         results.append(result)
     return results, interp
@@ -1239,9 +1313,6 @@ def main():
             except (NotImplementedError, SyntaxError) as e:
                 print(repr(e))
                 continue
-
-            for form in forms:
-                print(form)
 
             try:
                 results, interp = expand_and_evaluate_forms(forms, interp)
