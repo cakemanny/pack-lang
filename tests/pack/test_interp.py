@@ -409,6 +409,7 @@ def test_expand_and_evaluate__quoting(initial_interpreter):
                     (+ (first elems) (apply concat (rest elems)))
                     (first elems))
                 nil)))
+    ;; above is just machinery for the test
 
     (def c 3)
     (def zz '(1 2 3))
@@ -416,17 +417,18 @@ def test_expand_and_evaluate__quoting(initial_interpreter):
     `(a b c)
     `(a b ~c)
     `(a b ~@zz)
-    ; TODO check nested expansion
+    ``a
     """
     forms = read_all_forms(text)
 
     results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
 
-    assert results[-4:] == [
+    assert results[-5:] == [
         read_all_forms("pack.core/a")[0],
         read_all_forms("(pack.core/a pack.core/b pack.core/c)")[0],
         read_all_forms("(pack.core/a pack.core/b 3)")[0],
         read_all_forms("(pack.core/a pack.core/b 1 2 3)")[0],
+        read_all_forms("(quote pack.core/a)")[0],
     ]
 
 

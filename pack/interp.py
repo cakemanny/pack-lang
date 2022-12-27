@@ -1258,6 +1258,8 @@ def macroexpand_1(form, interp):
                 )
 
             if name in interp.namespaces[ns_name].defs:
+                # TODO: Should this error if the name refers to an alias
+                # already?
                 return form, interp
 
             return form, interp.update_ns(
@@ -1283,7 +1285,9 @@ def macroexpand(form, interp):
         form = new_form
 
 
-def expanding_quasi_quotes(form, interp):
+# Roughly following
+# https://www.cs.cmu.edu/Groups/AI/html/cltl/clm/node190.html
+def expanding_quasi_quote(form, interp):
     def quote_form(form):
         return Cons(Sym(None, 'quote'), Cons(form, nil))
     match form:
@@ -1299,8 +1303,12 @@ def expanding_quasi_quotes(form, interp):
                 raise NotImplementedError
             except EvalError:
                 return quote_form(Sym(interp.current_ns.name, name))
+        case Sym(_, _):
+            return quote_form(form)
         case Cons(Sym(None, 'unquote'), Cons(x, Nil())):
             return x
+        case Cons(Sym(None, 'unquote-splicing'), Cons(x, Nil())):
+            raise SyntaxError('"~@" found not inside a sequence')
         case Nil():
             return nil
         case Cons() as lst:
@@ -1309,7 +1317,7 @@ def expanding_quasi_quotes(form, interp):
                     case Cons(Sym(None, 'unquote-splicing'), Cons(x, Nil())):
                         return x
                 return Cons(Sym('pack.core', 'list'),
-                            Cons(expanding_quasi_quotes(form, interp), nil))
+                            Cons(expanding_quasi_quote(form, interp), nil))
             return Cons(Sym('pack.core', 'concat'),
                         List.from_iter(map(f, lst)))
         # TODO: vectors and maps too
@@ -1320,7 +1328,10 @@ def expanding_quasi_quotes(form, interp):
 def expand_quasi_quotes(form, interp):
     match form:
         case Cons(Sym(None, 'quasiquote'), Cons(quoted_form, Nil())):
-            return expanding_quasi_quotes(quoted_form, interp)
+            return expanding_quasi_quote(
+                expand_quasi_quotes(quoted_form, interp),
+                interp,
+            )
         case Cons() as lst:
             f = partial(expand_quasi_quotes, interp=interp)
             return List.from_iter(map(f, lst))
