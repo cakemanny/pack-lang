@@ -540,6 +540,7 @@ class Special:
 
 
 WHITESPACE = (' ', '\n', '\t', '\v')
+WHITESPACE_OR_COMMENT_START = WHITESPACE + (';',)
 
 # Still to do:
 #   #
@@ -743,8 +744,11 @@ def try_read(text):
     c = text[0]
 
     # eat whitespace
-    while c in WHITESPACE:
-        text = text[1:]
+    while c in WHITESPACE_OR_COMMENT_START:
+        if c == ';':
+            _, text = read_comment(text)
+        else:
+            text = text[1:]
         if text == '':
             return None, text
         c = text[0]
@@ -772,8 +776,6 @@ def try_read(text):
             return read_num(text)
         case '"':
             return read_str(text)
-        case ';':
-            return read_comment(text)
         case ':':
             return read_keyword(text)
         case s if is_ident(s):

@@ -8,6 +8,11 @@ from pack.interp import Sym, Keyword, Vec, ArrayMap, Map, List, Cons, nil
 from pack.interp import Interpreter, Var, Fn, expand_and_evaluate_forms
 
 
+# ----------------
+#  Data Structures
+# ----------------
+
+
 def test_nil():
     assert bool(nil) is False
     assert bool(Cons(None, nil)) is True
@@ -28,88 +33,6 @@ def test_list():
         yield 1
         yield 2
     assert List.from_iter(aux()) == Cons(0, Cons(1, Cons(2, nil)))
-
-
-def test_read_sym():
-    assert read_sym('a') == (Sym(None, 'a'), '')
-    assert read_sym('z') == (Sym(None, 'z'), '')
-    assert read_sym('hi ') == (Sym(None, 'hi'), ' ')
-    assert read_sym('h9 ') == (Sym(None, 'h9'), ' ')
-    assert read_sym('🫣🫒 😈') == (Sym(None, '🫣🫒'), ' 😈')
-    assert read_sym('ns/n') == (Sym('ns', 'n'), '')
-    assert read_sym('ns//') == (Sym('ns', '/'), '')
-
-    assert read_sym('ns/') == (Sym(None, 'ns/'), '')
-
-    assert read_sym('py/sys.stdin') == (Sym('py', 'sys.stdin'), '')
-
-    # lambda-list keywords are symbols
-    assert read_sym('&rest') == (Sym(None, '&rest'), '')
-
-
-def test_read_num():
-    assert read_num('1') == (1, '')
-    assert read_num('1 ') == (1, ' ')
-    assert read_num('123') == (123, '')
-    assert read_num('123 ') == (123, ' ')
-    assert read_num('123.3 ') == (123.3, ' ')
-
-    with pytest.raises(SyntaxError):
-        read_num('12.3.3 ')
-
-
-def test_read_str():
-    assert read_str('""') == ('', '')
-    assert read_str('"hallo"') == ('hallo', '')
-    assert read_str('"hallo"  some "extra"') == ('hallo', '  some "extra"')
-
-    with pytest.raises(Unclosed):
-        read_str('"hallo')
-
-    assert read_str(r'"ha\nllo"') == ('ha\nllo', '')
-    assert read_str(r'"ha\"llo"') == ('ha"llo', '')
-
-
-def test_try_read():
-    assert try_read('()') == (nil, '')
-    assert try_read('( )') == (nil, '')
-    assert try_read('(  )') == (nil, '')
-    assert try_read('[]') == (Vec(), '')
-    assert try_read('[  ]') == (Vec(), '')
-    assert try_read('[1 2 3]') == (Vec([1, 2, 3]), '')
-    assert try_read('{  }') == (ArrayMap.from_iter(()), '')
-    assert try_read('{1 2 3 4 5 6}') == (
-        ArrayMap.from_iter((
-            (1, 2),
-            (3, 4),
-            (5, 6)
-        )),
-        ''
-    )
-
-    with pytest.raises(Unmatched):
-        try_read('[  )')
-
-    # incomplete form
-    with pytest.raises(Unclosed):
-        assert try_read('(') == (None, '')
-
-    assert try_read('(1)') == (Cons(1, nil), '')
-
-    assert try_read('(\n1\n2\n3\n)') == (
-        Cons(1, Cons(2, Cons(3, nil))), ''
-    )
-
-    with pytest.raises(SyntaxError) as exc_info:
-        try_read('{ 1 }')
-    assert 'even number of forms' in str(exc_info.value)
-
-    assert try_read('-1')[0] == -1
-    assert try_read('+1')[0] == +1
-
-    assert try_read(';hi\n1') == (None, '1')
-    assert try_read(';hi\n') == (None, '')
-    assert try_read(';hi') == (None, '')
 
 
 def test_vec():
@@ -254,12 +177,124 @@ def test_hamt_2():
         assert len(m) == 99 - i
 
 
+# -------------
+#  Reader
+# -------------
+
+
+def test_read_sym():
+    assert read_sym('a') == (Sym(None, 'a'), '')
+    assert read_sym('z') == (Sym(None, 'z'), '')
+    assert read_sym('hi ') == (Sym(None, 'hi'), ' ')
+    assert read_sym('h9 ') == (Sym(None, 'h9'), ' ')
+    assert read_sym('🫣🫒 😈') == (Sym(None, '🫣🫒'), ' 😈')
+    assert read_sym('ns/n') == (Sym('ns', 'n'), '')
+    assert read_sym('ns//') == (Sym('ns', '/'), '')
+
+    assert read_sym('ns/') == (Sym(None, 'ns/'), '')
+
+    assert read_sym('py/sys.stdin') == (Sym('py', 'sys.stdin'), '')
+
+    # lambda-list keywords are symbols
+    assert read_sym('&rest') == (Sym(None, '&rest'), '')
+
+
+def test_read_num():
+    assert read_num('1') == (1, '')
+    assert read_num('1 ') == (1, ' ')
+    assert read_num('123') == (123, '')
+    assert read_num('123 ') == (123, ' ')
+    assert read_num('123.3 ') == (123.3, ' ')
+
+    with pytest.raises(SyntaxError):
+        read_num('12.3.3 ')
+
+
+def test_read_str():
+    assert read_str('""') == ('', '')
+    assert read_str('"hallo"') == ('hallo', '')
+    assert read_str('"hallo"  some "extra"') == ('hallo', '  some "extra"')
+
+    with pytest.raises(Unclosed):
+        read_str('"hallo')
+
+    assert read_str(r'"ha\nllo"') == ('ha\nllo', '')
+    assert read_str(r'"ha\"llo"') == ('ha"llo', '')
+
+
+def test_try_read():
+    assert try_read('()') == (nil, '')
+    assert try_read('( )') == (nil, '')
+    assert try_read('(  )') == (nil, '')
+    assert try_read('[]') == (Vec(), '')
+    assert try_read('[  ]') == (Vec(), '')
+    assert try_read('[1 2 3]') == (Vec([1, 2, 3]), '')
+    assert try_read('{  }') == (ArrayMap.from_iter(()), '')
+    assert try_read('{1 2 3 4 5 6}') == (
+        ArrayMap.from_iter((
+            (1, 2),
+            (3, 4),
+            (5, 6)
+        )),
+        ''
+    )
+
+    with pytest.raises(Unmatched):
+        try_read('[  )')
+
+    # incomplete form
+    with pytest.raises(Unclosed):
+        assert try_read('(') == (None, '')
+
+    assert try_read('(1)') == (Cons(1, nil), '')
+
+    assert try_read('(\n1\n2\n3\n)') == (
+        Cons(1, Cons(2, Cons(3, nil))), ''
+    )
+
+    with pytest.raises(SyntaxError) as exc_info:
+        try_read('{ 1 }')
+    assert 'even number of forms' in str(exc_info.value)
+
+    assert try_read('-1')[0] == -1
+    assert try_read('+1')[0] == +1
+
+
 def test_try_read__reader_macros():
     assert try_read("'(1 2)") == try_read("(quote (1 2))")
 
     assert try_read("`(1 2)") == try_read("(quasiquote (1 2))")
     assert try_read("`(a ~b)") == try_read("(quasiquote (a (unquote b)))")
     assert try_read("`(a ~@b)") == try_read("(quasiquote (a (unquote-splicing b)))")
+
+
+def test_try_read__comments():
+    assert try_read(';hi\n1') == (1, '')
+    assert try_read(';hi\n') == (None, '')
+    assert try_read(';hi') == (None, '')
+
+
+def test_read_all_forms__comments():
+
+    assert read_all_forms("""\
+    1
+    ; hi
+    """) == (1,)
+
+    assert read_all_forms("""\
+    ; hi
+    1
+    """) == (1,)
+    assert read_all_forms("""\
+    1 ; hi
+    """) == (1,)
+
+    assert read_all_forms("""\
+    (
+    1 ; my favourite number
+    9 ; my least favourite number
+    )
+    """) == (Cons(1, Cons(9, nil)),)
 
 
 @pytest.mark.parametrize('line_values,expected_forms', [
