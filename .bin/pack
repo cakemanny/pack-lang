@@ -1,0 +1,9 @@
+#!/bin/sh
+
+export "PYTHONPATH=$(dirname "$0")/.."
+
+if [ -t 0 ] && command -v rlwrap >/dev/null; then
+    exec rlwrap python3 -m pack.interp "$@"
+else
+    exec python3 -m pack.interp "$@"
+fi

@@ -5,7 +5,7 @@ import importlib
 import os
 import sys
 import traceback
-from collections.abc import Sequence, Mapping, Sized
+from collections.abc import Sequence, Mapping
 from dataclasses import dataclass
 from functools import reduce, partial
 from itertools import islice
@@ -53,7 +53,7 @@ class Keyword:
 
 
 # should make this a sequence ...
-class List(Sized):
+class List:
     @staticmethod
     def from_iter(it):
         try:
@@ -78,6 +78,17 @@ class Nil(List):
 
     def __iter__(self):
         yield from ()
+
+    def __reversed__(self):
+        return self
+
+    def __add__(self, o):
+        if not isinstance(o, List):
+            raise TypeError(
+                'can only concatenate List (not "%s") to List'
+                % (type(o).__name__)
+            )
+        return o
 
     if False:
         def __eq__(self, o):
@@ -109,14 +120,31 @@ class Cons(List):
             yield cons.hd
             cons = cons.tl
 
+    def __reversed__(self):
+        result = nil
+        for x in self:
+            result = Cons(x, result)
+        return result
+
     def __str__(self):
-        return '(' + ' '.join(map(str, iter(self))) + ')'
+        return '(' + ' '.join(map(str, self)) + ')'
 
     def __bool__(self):
         return True
 
     def __len__(self):
         return sum(map(lambda _: 1, self), 0)
+
+    def __add__(self, o):
+        if not isinstance(o, List):
+            raise TypeError(
+                'can only concatenate List (not "%s") to List'
+                % (type(o).__name__)
+            )
+        result = o
+        for x in reversed(self):
+            result = Cons(x, result)
+        return result
 
 
 # itertools recipes
@@ -487,6 +515,23 @@ class Map(Mapping):
         for k, v in it:
             m = m.assoc(k, v)
         return m
+
+# -------------
+#  Constants
+# -------------
+
+
+class Special:
+    "A simple namespace for some constants that we use"
+
+    DOT = Sym(None, '.')
+    DEF = Sym(None, 'def')
+    LETSTAR = Sym(None, 'let*')
+    IF = Sym(None, 'if')
+    FN = Sym(None, 'fn')
+    RAISE = Sym(None, 'raise')
+    QUOTE = Sym(None, 'quote')
+    VAR = Sym(None, 'var')
 
 
 # -------------
@@ -1103,6 +1148,7 @@ def eval_form(form, interp, env):
             raise SyntaxError(f'invalid fn form: {form}')
 
         case Cons(Sym(None, 'raise'), Cons(raisable_form, Nil() | None)):
+            # FIXME: this loses the effects of the evaluation on the interp
             raisable, interp = eval_form(raisable_form, interp, env)
             raise raisable
         case Cons(Sym(None, 'raise')):
@@ -1260,13 +1306,13 @@ def expanding_quasi_quotes(form, interp):
         case Cons() as lst:
             def f(form):
                 match form:
-                    case Cons('unquote-splicing', Cons(x, Nil())):
+                    case Cons(Sym(None, 'unquote-splicing'), Cons(x, Nil())):
                         return x
-                return Cons(Sym(None, 'list'),
+                return Cons(Sym('pack.core', 'list'),
                             Cons(expanding_quasi_quotes(form, interp), nil))
             return Cons(Sym('pack.core', 'concat'),
                         List.from_iter(map(f, lst)))
-        # TODO: vecotrs and maps too
+        # TODO: vectors and maps too
         case other:
             return other
 
@@ -1278,7 +1324,7 @@ def expand_quasi_quotes(form, interp):
         case Cons() as lst:
             f = partial(expand_quasi_quotes, interp=interp)
             return List.from_iter(map(f, lst))
-        # TODO: vecotrs and maps too
+        # TODO: vectors and maps too
         case other:
             return other
 

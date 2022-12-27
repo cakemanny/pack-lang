@@ -7,8 +7,6 @@ from pack.interp import Unmatched, SyntaxError, Unclosed
 from pack.interp import Sym, Keyword, Vec, ArrayMap, Map, List, Cons, nil
 from pack.interp import Interpreter, Var, Fn, expand_and_evaluate_forms
 
-NIL = tuple()
-
 
 def test_nil():
     assert bool(nil) is False
@@ -79,7 +77,7 @@ def test_try_read():
     assert try_read('[]') == (Vec(), '')
     assert try_read('[  ]') == (Vec(), '')
     assert try_read('[1 2 3]') == (Vec([1, 2, 3]), '')
-    assert try_read('{  }') == (ArrayMap.from_iter(NIL), '')
+    assert try_read('{  }') == (ArrayMap.from_iter(()), '')
     assert try_read('{1 2 3 4 5 6}') == (
         ArrayMap.from_iter((
             (1, 2),
@@ -377,28 +375,58 @@ def test_expand_quasi_quotes(initial_interpreter):
     expanded = expand_quasi_quotes(form, interp)
 
     assert expanded == read_all_forms(
-        "(pack.core/concat (list (quote pack.core/a)) (list (quote pack.core/b)))"
+        """
+        (pack.core/concat
+            (pack.core/list (quote pack.core/a))
+            (pack.core/list (quote pack.core/b)))
+        """
     )[0]
 
 
-@pytest.mark.skip
 def test_expand_and_evaluate__quoting(initial_interpreter):
     text = """\
     (ns pack.core)
+    (import operator)
+    (def + (. operator add))
+    (def not (. operator not_))
+    (def first (fn [xs]
+        (if xs (. xs hd) nil)))
+    (def rest (fn [xs]
+        (if xs (. xs tl) nil)))
+    (def list (fn [& elems] elems))
+    ;; bullshit definition of apply just for this test
+    (def apply (fn [f args]
+        (if (not (rest args))
+            (f (first args))
+            (if (not (rest (rest args)))
+                (f (first args) (first (rest args)))
+                (f (first args) (first (rest args)) (first (rest (rest args))))))))
+
+    (def concat
+        (fn concat [& elems]
+            (if elems
+                (if (rest elems)
+                    (+ (first elems) (apply concat (rest elems)))
+                    (first elems))
+                nil)))
+
+    (def c 3)
+    (def zz '(1 2 3))
     `a
     `(a b c)
+    `(a b ~c)
+    `(a b ~@zz)
+    ; TODO check nested expansion
     """
     forms = read_all_forms(text)
 
     results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
 
-    assert results == [
-        None,
+    assert results[-4:] == [
         read_all_forms("pack.core/a")[0],
         read_all_forms("(pack.core/a pack.core/b pack.core/c)")[0],
-        # Cons(Sym('pack.core', 'a'),
-        #      Cons(Sym('pack.core', 'b'),
-        #           Cons(Sym('pack.core', 'c'))))
+        read_all_forms("(pack.core/a pack.core/b 3)")[0],
+        read_all_forms("(pack.core/a pack.core/b 1 2 3)")[0],
     ]
 
 
@@ -664,16 +692,12 @@ def test_defmacro(initial_interpreter):
 
     (import pack.interp)
     (def List (. pack.interp List))
-    (def Cons (. pack.interp Cons))
-    (def nil (. pack.interp nil))
 
     (def list?
         (fn
             [x]
             ((. builtins isinstance) x List)))
-    (def list
-        (fn [x y z]
-            (Cons x (Cons y (Cons z nil)))))
+    (def list (fn [& elements] elements))
     (def first
         (fn [xs]
             (if (list? xs)

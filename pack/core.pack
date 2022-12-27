@@ -1,4 +1,8 @@
 (ns pack.core)
+
+;; Data structures
+(def list (fn [& elems] elems))
+
 ;; Logic
 (def not (fn [x] (if x false true)))
 
