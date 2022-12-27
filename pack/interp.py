@@ -167,29 +167,11 @@ class Vec(Sequence):
     xs: tuple[Any | 'Vec']
     height: int
 
-    def __init__(self, xs: list | tuple = (), height=None):
-        # TODO: implement a version that works for iterable
-        self._len = len(xs)
-
-        if height is None:
-            height = 0
-            len_ = len(xs)
-
-            for i in range(9):
-                if len_ > (1 << (5 * i)):
-                    height = i
-                else:
-                    break
-
-        self.height = height
-
-        if height == 0:
-            self.xs = tuple(xs)
+    def __post_init__(self):
+        if self.height == 0:
+            self._len = len(self.xs)
         else:
-            batch_size = 1 << (5 * height)
-            self.xs = tuple(
-                Vec(teil, self.height - 1) for teil in batched(xs, batch_size)
-            )
+            self._len = sum((len(subnode) for subnode in self.xs), 0)
 
     def is_leaf(self):
         return self.height == 0
@@ -198,6 +180,7 @@ class Vec(Sequence):
         return self._len
 
     def __getitem__(self, idx: int):
+        # TODO: accept slices
         if idx < 0:
             return self[self._len + idx]
         if idx >= self._len:
@@ -226,6 +209,28 @@ class Vec(Sequence):
             '...',
             self[-3], self[-2], self[-1],
         ))) + ']'
+
+    @staticmethod
+    def from_seq(xs: list | tuple = (), height=None):
+        # TODO: implement a version that works for iterable
+        if height is None:
+            height = 0
+            len_ = len(xs)
+
+            for i in range(9):
+                if len_ > (1 << (5 * i)):
+                    height = i
+                else:
+                    break
+
+        if height == 0:
+            vec_xs = tuple(xs)
+        else:
+            batch_size = 1 << (5 * height)
+            vec_xs = tuple(
+                Vec.from_seq(teil, height - 1) for teil in batched(xs, batch_size)
+            )
+        return Vec(vec_xs, height)
 
 
 @dataclass(frozen=True, slots=True)
@@ -509,8 +514,8 @@ class Map(Mapping):
             )
         return cls._empty
 
-    @classmethod
-    def from_iter(self, it):
+    @staticmethod
+    def from_iter(it):
         m = Map.empty()
         for k, v in it:
             m = m.assoc(k, v)
@@ -673,7 +678,7 @@ def close_sequence(opener, elements):
         case '(':
             return List.from_iter(elements)
         case '[':
-            return Vec(elements)
+            return Vec.from_seq(elements)
         case '{':
             try:
                 return Map.from_iter(take_pairs(elements))
@@ -1231,7 +1236,7 @@ def eval_form(form, interp, env):
             for sub_form in vec:
                 value, interp = eval_form(sub_form, interp, env)
                 values.append(value)
-            return Vec(values), interp
+            return Vec.from_seq(values), interp
 
     raise NotImplementedError(form)
 
