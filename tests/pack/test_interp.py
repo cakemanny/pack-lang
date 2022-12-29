@@ -36,23 +36,24 @@ def test_list():
 
 
 def test_vec():
-    # Leaf vector
-    assert len(Vec.from_seq(range(31))) == 31
-    assert Vec.from_seq(range(31))[30] == 30
-    assert Vec.from_seq(range(31))[-1] == 30
-    assert Vec.from_seq(range(31))[-2] == 29
+    assert len(Vec.from_iter([])) == 0
 
-    assert len(Vec.from_seq(range(32))) == 32
+    assert len(Vec.from_iter(range(31))) == 31
+    assert Vec.from_iter(range(31))[30] == 30
+    assert Vec.from_iter(range(31))[-1] == 30
+    assert Vec.from_iter(range(31))[-2] == 29
+
+    assert len(Vec.from_iter(range(32))) == 32
 
     # Two level Vector
-    assert len(Vec.from_seq(range(33))) == 33
-    assert Vec.from_seq(range(33))[32] == 32
-    assert Vec.from_seq(range(33))[2] == 2
+    assert len(Vec.from_iter(range(33))) == 33
+    assert Vec.from_iter(range(33))[32] == 32
+    assert Vec.from_iter(range(33))[2] == 2
 
 
 def test_vec_3():
     # Three level vector
-    v = Vec.from_seq(range(1030))
+    v = Vec.from_iter(range(1030))
     assert len(v) == 1030
     assert v.height == 2
     assert len(v.xs) == 2
@@ -226,9 +227,9 @@ def test_try_read():
     assert try_read('()') == (nil, '')
     assert try_read('( )') == (nil, '')
     assert try_read('(  )') == (nil, '')
-    assert try_read('[]') == (Vec.from_seq(), '')
-    assert try_read('[  ]') == (Vec.from_seq(), '')
-    assert try_read('[1 2 3]') == (Vec.from_seq([1, 2, 3]), '')
+    assert try_read('[]') == (Vec.empty(), '')
+    assert try_read('[  ]') == (Vec.empty(), '')
+    assert try_read('[1 2 3]') == (Vec.from_iter([1, 2, 3]), '')
     assert try_read('{  }') == (ArrayMap.from_iter(()), '')
     assert try_read('{1 2 3 4 5 6}') == (
         ArrayMap.from_iter((
@@ -299,11 +300,11 @@ def test_read_all_forms__comments():
 
 @pytest.mark.parametrize('line_values,expected_forms', [
     (['1'], (1,)),
-    (['[1', '2]'], (Vec.from_seq((1, 2,)),)),
+    (['[1', '2]'], (Vec.from_iter([1, 2,]),)),
     (['(', ')'], (nil,)),
-    (['(', ') []'], (nil, Vec.from_seq(),)),
+    (['(', ') []'], (nil, Vec.empty(),)),
     (['()', '[]'], (nil,)),  # second line doesn't happen yet
-    (['(', ') [', ']'], (nil, Vec.from_seq(),)),
+    (['(', ') [', ']'], (nil, Vec.empty(),)),
 ])
 def test_read_forms(line_values, expected_forms):
 
@@ -390,7 +391,7 @@ def test_expand_and_evaluate__syntax(initial_interpreter):
         Keyword(None, 'a-keyword'),
         Sym(None, 'a-symbol'),
         "a string",
-        -1, 1, -1.2, 1.2, Vec.from_seq([1, 2, 3]),
+        -1, 1, -1.2, 1.2, Vec.from_iter([1, 2, 3]),
         Map.empty().assoc(Keyword(None, 'a'), 1).assoc(Keyword(None, 'b'), 2)
     ]
 
@@ -600,7 +601,7 @@ def test_expand_and_evaluate__4(initial_interpreter):
         None,
         Var(Sym('pack.core', 'not'), Any(Fn)),
         Map.empty().assoc(True, 1).assoc(False, 0),
-        Vec.from_seq([1, 2, 3, False]),
+        Vec.from_iter([1, 2, 3, False]),
         None,
         True,
     ]
@@ -692,7 +693,7 @@ def test_expand_and_evaluate__let(initial_interpreter):
 
     assert 'pack.core' in interp.namespaces
     assert interp.current_ns.name == 'pack.core'
-    assert results == [None, 1, Vec.from_seq([1, 2])]
+    assert results == [None, 1, Vec.from_iter([1, 2])]
 
 
 def test_expand_and_evaluate__let__error(initial_interpreter):

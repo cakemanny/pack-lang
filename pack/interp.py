@@ -1,15 +1,13 @@
-#!/usr/bin/env python3
-
 import dataclasses
 import importlib
 import os
 import sys
 import traceback
-from collections.abc import Sequence, Mapping
+from collections.abc import Sequence, Mapping, Set
 from dataclasses import dataclass
 from functools import reduce, partial
-from itertools import islice
-from typing import Any, Optional, Set, Collection
+from itertools import chain, islice
+from typing import Any, Optional, Collection, Iterable
 
 
 # ----------------
@@ -212,26 +210,35 @@ class Vec(Sequence):
         ))) + ']'
 
     @staticmethod
-    def from_seq(xs: list | tuple = (), height=None):
-        # TODO: implement a version that works for iterable
-        if height is None:
-            height = 0
-            len_ = len(xs)
+    def from_iter(xs: Iterable):
+        # Every time the first batch in the iterator has less than
+        # 32 items we nest the iterator into another iterator that
+        # batches up up to 32 of those.
+        def aux(it, level):
+            it0 = (Vec(ys, level) for ys in batched(it, 32))
 
-            for i in range(9):
-                if len_ > (1 << (5 * i)):
-                    height = i
-                else:
-                    break
+            first = next(it0)
+            if len(first.xs) < 32:
+                return first
 
-        if height == 0:
-            vec_xs = tuple(xs)
-        else:
-            batch_size = 1 << (5 * height)
-            vec_xs = tuple(
-                Vec.from_seq(teil, height - 1) for teil in batched(xs, batch_size)
-            )
-        return Vec(vec_xs, height)
+            # undo having taken the first item
+            it0 = chain(iter([first]), it0)
+
+            return aux(it0, level + 1)
+
+        # Due to the construction of aux, only an empty xs will cause
+        # StopIteration to be raised.
+        try:
+            return aux(xs, 0)
+        except StopIteration:
+            return _EMPTY_VEC
+
+    @staticmethod
+    def empty():
+        return _EMPTY_VEC
+
+
+_EMPTY_VEC = Vec((), 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +284,7 @@ class ArrayMap(Mapping):
     def items(self) -> Set:
         kvs = self.kvs
 
-        class ItemsView:
+        class ItemsView(Set):
             def __iter__(self):
                 return take_pairs(kvs)
 
@@ -335,9 +342,9 @@ class ArrayMap(Mapping):
             (k, v) for (k, v) in self.items() if k != key
         )
 
-    @classmethod
-    def empty(cls):
-        return cls(())
+    @staticmethod
+    def empty():
+        return _EMPTY_ARRAY_MAP
 
     @classmethod
     def from_iter(cls, it):
@@ -350,6 +357,9 @@ class ArrayMap(Mapping):
                     yield k
                     yield v
         return cls(tuple(aux()))
+
+
+_EMPTY_ARRAY_MAP = ArrayMap(())
 
 
 @dataclass(frozen=True, slots=True)
@@ -679,7 +689,7 @@ def close_sequence(opener, elements):
         case '(':
             return List.from_iter(elements)
         case '[':
-            return Vec.from_seq(elements)
+            return Vec.from_iter(elements)
         case '{':
             try:
                 return Map.from_iter(take_pairs(elements))
@@ -1237,7 +1247,7 @@ def eval_form(form, interp, env):
             for sub_form in vec:
                 value, interp = eval_form(sub_form, interp, env)
                 values.append(value)
-            return Vec.from_seq(values), interp
+            return Vec.from_iter(values), interp
 
     raise NotImplementedError(form)
 
