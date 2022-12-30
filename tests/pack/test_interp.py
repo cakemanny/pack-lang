@@ -61,6 +61,10 @@ def test_vec_3():
     assert len(v.xs[0].xs[0]) == 32
     assert len(v.xs[1].xs) == 1
     assert len(v.xs[1].xs[0]) == 6
+    assert v.xs[0].height == 1
+    assert v.xs[1].height == 1
+    assert v.xs[0].xs[0].height == 0
+    assert v.xs[1].xs[0].height == 0
     assert v[2] == 2
     assert v[33] == 33
     assert v[600] == 600
@@ -68,6 +72,42 @@ def test_vec_3():
     assert v[1028] == 1028
     assert v[-1] == 1029
     assert v[-2] == 1028
+
+
+def test_vec__conj():
+    assert Vec.empty().conj(1) == Vec.from_iter([1])
+
+    assert Vec.from_iter(range(32)).conj(1) == Vec.from_iter(
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+         16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+         1]
+    )
+
+    assert Vec.from_iter(range(33)).conj(1) == Vec.from_iter(
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+         16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+         32, 1]
+    )
+
+    assert Vec.from_iter(range(64)).conj(1) == Vec.from_iter(
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+         16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+         32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+         48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+         1]
+    )
+
+    for i in range(1022, 1028):
+        assert Vec.from_iter(range(i)).conj(i) == \
+            Vec.from_iter(range(i + 1))
+
+
+def test_vec__add():
+    assert Vec.empty() + Vec.empty() == Vec.empty()
+
+    assert Vec.from_iter([1, 2]) + Vec.empty() == Vec.from_iter([1, 2])
+
+    assert Vec.empty() + Vec.from_iter([1, 2]) == Vec.from_iter([1, 2])
 
 
 def test_arraymap():

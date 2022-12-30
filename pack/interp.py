@@ -194,6 +194,66 @@ class Vec(Sequence):
 
         return self.xs[subvec_idx][mask & idx]
 
+    def conj(self, x):
+        if self._is_leaf():
+            if len(self.xs) < 32:
+                return Vec(self.xs + (x,), 0)
+            return Vec((self, Vec((x,), 0)), 1)
+
+        old_tail = self.xs[-1]
+        new_tail = old_tail.conj(x)
+        if new_tail.height == old_tail.height:
+            return Vec(
+                self.xs[:-1] + (new_tail,),
+                self.height,
+            )
+        if len(self.xs) < 32:
+            return Vec(
+                self.xs + new_tail.xs[1:],
+                self.height,
+            )
+
+        new_new_tail = x
+        for i in range(self.height + 1):
+            new_new_tail = Vec((new_new_tail,), i)
+
+        return Vec((self, new_new_tail), self.height + 1)
+
+    def conj__(self, x):
+        if not self._is_leaf():
+            old_tail = self.xs[-1]
+            new_tail = old_tail.conj(x)
+            if new_tail.height == old_tail.height:
+                return Vec(
+                    self.xs[:-1] + (new_tail,),
+                    self.height,
+                )
+        if len(self.xs) < 32:
+            def new_vec(to_append):
+                return Vec(self.xs + to_append, self.height)
+
+            if self._is_leaf():
+                return new_vec((x,))
+            return new_vec(new_tail.xs[1:])
+
+        new_new_tail = x
+        for i in range(self.height + 1):
+            new_new_tail = Vec((new_new_tail,), i)
+
+        return Vec((self, new_new_tail), self.height + 1)
+
+    def __add__(self, other):
+        if not isinstance(other, Vec):
+            raise TypeError(
+                'can only concatenate Vec (not "%s") to Vec'
+                % (type(other).__name__)
+            )
+        result = self
+        # Exteme inefficiency
+        for x in other:
+            result = result.conj(x)
+        return result
+
     def __call__(self, idx: int):
         return self[idx]
 
@@ -220,9 +280,13 @@ class Vec(Sequence):
             first = next(it0)
             if len(first.xs) < 32:
                 return first
+            try:
+                second = next(it0)
+            except StopIteration:
+                return first
 
             # undo having taken the first item
-            it0 = chain(iter([first]), it0)
+            it0 = chain(iter([first, second]), it0)
 
             return aux(it0, level + 1)
 
