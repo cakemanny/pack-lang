@@ -1138,7 +1138,8 @@ def extract_closure(body, params, interp, env):
             case Cons(Sym(None, 'def'), Cons(Sym(), Cons(init, Nil()))):
                 return aux(init, m, lets)
             # TODO: let* ?
-            case Cons(Sym(None, 'loop'), Cons(Vec() as bindings, Cons(body, Nil()))):
+            case Cons(Sym(None, 'let*' | 'loop'),
+                      Cons(Vec() as bindings, Cons(body, Nil()))):
                 for binding, init in take_pairs(bindings):
                     m = aux(init, m, lets)
                     lets = lets.assoc(binding, None)

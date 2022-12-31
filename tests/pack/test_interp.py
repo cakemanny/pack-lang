@@ -538,7 +538,7 @@ def test_expand_and_evaluate__fn_rest_args(initial_interpreter):
         (fn [func accum lst]
             (if (null? lst)
                 accum
-                (foldl func (func accum (first lst)) (rest lst)))))
+                (recur func (func accum (first lst)) (rest lst)))))
 
     (import operator)
 
@@ -822,6 +822,7 @@ def test_expand_and_evaluate__let(initial_interpreter):
     (ns pack.core)
     (let* [x 1] x)
     (let* [x 1 y 2] [x y])
+    (let* [x 1 y ((. x __mul__) 2)] [x y])
     """
     forms = read_all_forms(text)
 
@@ -829,7 +830,32 @@ def test_expand_and_evaluate__let(initial_interpreter):
 
     assert 'pack.core' in interp.namespaces
     assert interp.current_ns.name == 'pack.core'
-    assert results == [None, 1, Vec.from_iter([1, 2])]
+    assert results == [
+        None,
+        1,
+        Vec.from_iter([1, 2]),
+        Vec.from_iter([1, 2]),
+    ]
+
+
+def test_expand_and_evaluate__let__fn(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (import operator)
+    (def * (. operator mul))
+    (def + (. operator add))
+    (def f
+        (fn [x]
+            (let* [y (* x 2)
+                   z (+ y 1)]
+                (+ z 4))))
+    (f 3)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert results[-1] == 11
 
 
 def test_expand_and_evaluate__let__error(initial_interpreter):

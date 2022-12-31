@@ -1,6 +1,8 @@
 (ns pack.core)
-
+(import builtins)
+(import operator)
 (import pack.interp)
+
 (def eval (. pack.interp rt_eval))
 (def apply (. pack.interp rt_apply))
 
@@ -8,11 +10,42 @@
 (def list (fn [& elems] elems))
 (def vector (fn [& elems] ((. (. pack.interp Vec) from_iter) elems)))
 
+(def + (. operator add))
+
+(def first (fn [xs] (. xs hd)))
+(def rest (fn [xs] (. xs tl)))
+(def null? (fn [lst] (if lst false true)))
+
+(def foldl
+  (fn [func accum lst]
+    (if (null? lst)
+      accum
+      (recur func (func accum (first lst)) (rest lst)))))
+
+;; concat
+; foldl with + would be very inefficient due to + being linear in the
+; first argument
+; usually this would be solved by using foldr - but then we end up consuming
+; the call stack.
+; so, instead we stick items onto the result in reverse order and then reverse
+; essentially using the list as the stack instead of the call stack
+(def concat
+  (fn concat [& elems]
+    (let* [rev-plus (fn [xs ys] (+ ys xs))
+           rev (. builtins reversed)]
+     (rev (foldl rev-plus '() elems)))))
+
+;(def concat
+;  (fn concat [& elems]
+;    (if elems
+;      (if (rest elems)
+;        (+ (first elems) (apply concat (rest elems)))
+;        (first elems))
+;      nil)))
 
 ;; Logic
 (def not (fn [x] (if x false true)))
 
-(import operator)
 ;; Arithmatic
 (def + (. operator add))
 (def - (. operator sub))
