@@ -79,8 +79,8 @@ def test_vec__conj():
 
     assert Vec.from_iter(range(32)).conj(1) == Vec.from_iter(
         [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-         16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-         1]
+            16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+            1]
     )
 
     assert Vec.from_iter(range(33)).conj(1) == Vec.from_iter(
@@ -96,7 +96,6 @@ def test_vec__conj():
          48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
          1]
     )
-
     for i in range(1022, 1028):
         assert Vec.from_iter(range(i)).conj(i) == \
             Vec.from_iter(range(i + 1))
@@ -108,6 +107,17 @@ def test_vec__add():
     assert Vec.from_iter([1, 2]) + Vec.empty() == Vec.from_iter([1, 2])
 
     assert Vec.empty() + Vec.from_iter([1, 2]) == Vec.from_iter([1, 2])
+
+    for i in range(0, 2000, 50):
+        assert Vec.from_iter(range(i)) + Vec.from_iter(range(i, 2000)) \
+            == Vec.from_iter(range(2000))
+
+
+def test_vec__iter():
+    v = Vec.from_iter(range(3000))
+    assert Vec.from_iter(v) == v
+
+    assert Vec.from_iter(reversed(Vec.from_iter(reversed(v)))) == v
 
 
 def test_arraymap():

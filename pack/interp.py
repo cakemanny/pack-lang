@@ -7,7 +7,7 @@ from collections.abc import Sequence, Mapping, Set
 from dataclasses import dataclass
 from functools import reduce, partial
 from itertools import chain, islice
-from typing import Any, Optional, Collection, Iterable
+from typing import Any, Optional, Collection, Iterable, Iterator
 
 
 # ----------------
@@ -194,7 +194,18 @@ class Vec(Sequence):
 
         return self.xs[subvec_idx][mask & idx]
 
+    def __iter__(self):
+        if self._is_leaf():
+            return iter(self.xs)
+        return chain.from_iterable(self.xs)
+
+    def __reversed__(self):
+        if self._is_leaf():
+            return reversed(self.xs)
+        return chain.from_iterable(map(reversed, self.xs))
+
     def conj(self, x):
+        # Should we just use _add_iter with a a 1-tuple?
         if self._is_leaf():
             if len(self.xs) < 32:
                 return Vec(self.xs + (x,), 0)
@@ -219,28 +230,41 @@ class Vec(Sequence):
 
         return Vec((self, new_new_tail), self.height + 1)
 
-    def conj__(self, x):
-        if not self._is_leaf():
-            old_tail = self.xs[-1]
-            new_tail = old_tail.conj(x)
-            if new_tail.height == old_tail.height:
-                return Vec(
-                    self.xs[:-1] + (new_tail,),
-                    self.height,
-                )
-        if len(self.xs) < 32:
-            def new_vec(to_append):
-                return Vec(self.xs + to_append, self.height)
+    def _fill(self, ys: Iterator):
+        """
+        fill the space in the vector from ys, without overflowing or
+        increasing height
+        """
+        if self._is_leaf():
+            first = islice(ys, 32 - len(self.xs))
+            return Vec(self.xs + tuple(first), 0), ys
 
-            if self._is_leaf():
-                return new_vec((x,))
-            return new_vec(new_tail.xs[1:])
+        last_node, remaining = self.xs[-1]._fill(ys)
+        more_vecs = (
+            Vec.from_iter(batch)
+            for batch in islice(
+                batched(remaining, (1 << (5 * self.height))),
+                (32 - len(self.xs)),
+            )
+        )
+        return Vec(
+            self.xs[:-1] + (last_node,) + tuple(more_vecs),
+            self.height
+        ), remaining
 
-        new_new_tail = x
-        for i in range(self.height + 1):
-            new_new_tail = Vec((new_new_tail,), i)
+    def _add_iter(self, ys):
+        "append the contents of an iterator to this vector"
+        filled, remaining = self._fill(iter(ys))
+        try:
+            n = next(remaining)
+            remaining = chain(iter([n]), remaining)
+            is_more = True
+        except StopIteration:
+            is_more = False
 
-        return Vec((self, new_new_tail), self.height + 1)
+        if not is_more:
+            return filled
+        return Vec(xs=(filled,), height=(self.height + 1))._add_iter(remaining)
 
     def __add__(self, other):
         if not isinstance(other, Vec):
@@ -248,11 +272,7 @@ class Vec(Sequence):
                 'can only concatenate Vec (not "%s") to Vec'
                 % (type(other).__name__)
             )
-        result = self
-        # Exteme inefficiency
-        for x in other:
-            result = result.conj(x)
-        return result
+        return self._add_iter(other)
 
     def __call__(self, idx: int):
         return self[idx]
