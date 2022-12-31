@@ -446,6 +446,26 @@ def test_expand_and_evaluate__syntax(initial_interpreter):
     ]
 
 
+def test_expand_and_evaluate__eval(initial_interpreter):
+    # Just check that the evaluator doesn't choke
+    text = """\
+    (ns pack.core)
+    (import pack.interp)
+    (def eval (. pack.interp rt_eval))
+    (import operator)
+    (def + (. operator add))
+
+    (eval '(+ 1 2))
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert results[-1:] == [
+        3
+    ]
+
+
 def test_expand_quasi_quotes(initial_interpreter):
     from pack.interp import expand_quasi_quotes
 
@@ -480,13 +500,9 @@ def test_expand_and_evaluate__quoting(initial_interpreter):
     (def rest (fn [xs]
         (if xs (. xs tl) nil)))
     (def list (fn [& elems] elems))
-    ;; bullshit definition of apply just for this test
-    (def apply (fn [f args]
-        (if (not (rest args))
-            (f (first args))
-            (if (not (rest (rest args)))
-                (f (first args) (first (rest args)))
-                (f (first args) (first (rest args)) (first (rest (rest args))))))))
+
+    (import pack.interp)
+    (def apply (. pack.interp rt_apply))
 
     (def concat
         (fn concat [& elems]

@@ -3,7 +3,7 @@
 export "PYTHONPATH=$(dirname "$0")/.."
 
 if [ -t 0 ] && command -v rlwrap >/dev/null; then
-    exec rlwrap python3 -m pack.interp "$@"
+    exec rlwrap python3 -m pack.main "$@"
 else
-    exec python3 -m pack.interp "$@"
+    exec python3 -m pack.main "$@"
 fi

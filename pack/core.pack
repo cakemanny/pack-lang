@@ -1,5 +1,9 @@
 (ns pack.core)
 
+(import pack.interp)
+(def eval (. pack.interp rt_eval))
+(def apply (. pack.interp rt_apply))
+
 ;; Data structures
 (def list (fn [& elems] elems))
 

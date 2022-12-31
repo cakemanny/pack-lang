@@ -7,7 +7,7 @@ from collections.abc import Sequence, Mapping, Set
 from dataclasses import dataclass
 from functools import reduce, partial
 from itertools import chain, islice
-from typing import Any, Optional, Collection, Iterable, Iterator
+from typing import Any, Optional, Collection, Iterable, Iterator, Callable
 
 
 # ----------------
@@ -119,6 +119,7 @@ class Cons(List):
             cons = cons.tl
 
     def __reversed__(self):
+        # FIXME: This should return an iterator, right?
         result = nil
         for x in self:
             result = Cons(x, result)
@@ -1026,7 +1027,30 @@ def is_macro(sym, interp, env):
         return False
 
 
-class Fn:
+class IFn:
+    """
+    An function that potentially affects interpreter state.
+    All lisp functions adhere to this.
+    """
+    def __call__(self, interp, *args) -> (Any, Interpreter):
+        raise NotImplementedError()
+
+
+class RTFn(IFn):
+    def __init__(self, func):
+        self.func = func
+
+    def __call__(self, interp, *args):
+        if not isinstance(interp, Interpreter):
+            breakpoint()
+            raise TypeError('first argument must be an Interpreter')
+        return self.func(interp, *args)
+
+    def __repr__(self):
+        return f'<RTFn({self.func}) object at {hex(id(self))}>'
+
+
+class Fn(IFn):
     def __init__(self, name, params, body, env):
         assert isinstance(params, Vec)
         self.name = name
@@ -1055,6 +1079,15 @@ class Fn:
 
     def __repr__(self):
         return f'<Fn({self.name}) object at {hex(id(self))}>'
+
+
+def _rt_apply(interp, f, args):
+    if isinstance(f, IFn):
+        return f(interp, *args)
+    return f(*args), interp
+
+
+rt_apply = RTFn(_rt_apply)
 
 
 def extract_closure(body, params, interp, env):
@@ -1274,7 +1307,7 @@ def eval_form(form, interp, env):
         case Cons(Sym() as sym, args) if is_macro(sym, interp, env):
             # TODO: maybe this is the point we should be calling macroexpand...
             proc, interp = eval_form(sym, interp, env)
-            assert isinstance(proc, Fn)
+            assert isinstance(proc, IFn)
             expanded_form, interp = proc(interp, *list(args))
             return eval_form(expanded_form, interp, env)
         case Cons(proc_form, args):
@@ -1285,7 +1318,7 @@ def eval_form(form, interp, env):
                 arg_val, interp = eval_form(arg, interp, env)
                 arg_vals.append(arg_val)
             # Assume proc is an Fn
-            if isinstance(proc, Fn):
+            if isinstance(proc, IFn):
                 return proc(interp, *arg_vals)
             # python function
             return proc(*arg_vals), interp
@@ -1332,6 +1365,14 @@ def eval_form(form, interp, env):
                 value, interp = eval_form(sub_form, interp, env)
                 values.append(value)
             return Vec.from_iter(values), interp
+
+        case IFn():
+            return form, interp
+        # These have to go at the bottom because map, vec and keyword, etc
+        # implement callable as well, but we are just wanting to deal with
+        # python functions here
+        case f if isinstance(f, Callable):
+            return f, interp
 
     raise NotImplementedError(form)
 
@@ -1453,6 +1494,15 @@ def expand_and_evaluate_forms(forms, interp):
     return results, interp
 
 
+def _rt_eval(interp, form):
+    [result], interp = expand_and_evaluate_forms([form], interp)
+    return result, interp
+
+
+rt_eval = RTFn(_rt_eval)
+"""eval - as to be imported and used from lisp programs. evaluates a single form"""
+
+
 def main():
 
     interp = Interpreter(Map.empty())
@@ -1486,7 +1536,3 @@ def main():
 
         forms = read_all_forms(sys.stdin.read())
         _, interp = expand_and_evaluate_forms(forms, interp)
-
-
-if __name__ == '__main__':
-    main()
