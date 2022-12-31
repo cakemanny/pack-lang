@@ -697,6 +697,29 @@ def test_expand_quasi_quotes(initial_interpreter):
         """
     )[0]
 
+    form = read_all_forms(" `[a b] ")[0]
+    expanded = expand_quasi_quotes(form, interp)
+
+    assert expanded == read_all_forms(
+        """
+        (pack.core/apply pack.core/vector
+            (pack.core/concat
+                (pack.core/list (quote pack.core/a))
+                (pack.core/list (quote pack.core/b))))
+        """
+    )[0]
+
+    form = read_all_forms(" `{:a a} ")[0]
+    expanded = expand_quasi_quotes(form, interp)
+    assert expanded == read_all_forms(
+        """
+        (pack.core/apply pack.core/hash-map
+            (pack.core/concat
+                (pack.core/list :a)
+                (pack.core/list (quote pack.core/a))))
+        """
+    )[0]
+
 
 def test_expand_and_evaluate__quoting(initial_interpreter):
     text = """\

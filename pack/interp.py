@@ -1481,9 +1481,12 @@ def expanding_quasi_quote(form, interp):
     def quote_form(form):
         return Cons(Sym(None, 'quote'), Cons(form, nil))
     match form:
+        case Sym(None, 'true' | 'false' | 'nil'):
+            return form
         case Sym(None, 'ns' | 'require' | 'import'):
             return quote_form(form)
-        case Sym(None, '.' | 'def' | 'let*' | 'if' | 'fn' | 'raise' | 'quote' | 'var'):
+        case Sym(None, '.' | 'def' | 'let*' | 'if' | 'fn' | 'raise' | 'quote'
+                 | 'var' | 'recur' | 'loop'):
             return quote_form(form)
         case Sym(None, name) as sym:
             try:
@@ -1510,7 +1513,16 @@ def expanding_quasi_quote(form, interp):
                             Cons(expanding_quasi_quote(form, interp), nil))
             return Cons(Sym('pack.core', 'concat'),
                         List.from_iter(map(f, lst)))
-        # TODO: vectors and maps too
+        case Vec() as vec:
+            elems = List.from_iter(vec)
+            return Cons(Sym('pack.core', 'apply'),
+                        Cons(Sym('pack.core', 'vector'),
+                             Cons(expanding_quasi_quote(elems, interp), nil)))
+        case ArrayMap() | Map() as m:
+            elems = List.from_iter(chain(*m.items()))
+            return Cons(Sym('pack.core', 'apply'),
+                        Cons(Sym('pack.core', 'hash-map'),
+                             Cons(expanding_quasi_quote(elems, interp), nil)))
         case other:
             return other
 

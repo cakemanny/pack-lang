@@ -9,6 +9,11 @@
 ;; Data structures
 (def list (fn [& elems] elems))
 (def vector (fn [& elems] ((. (. pack.interp Vec) from_iter) elems)))
+(def hash-map
+  (fn [& elems]
+    (let* [kvs ((. pack.interp take_pairs) elems)
+           map-from-entries (. (. pack.interp Map) from_iter)]
+       (map-from-entries kvs))))
 
 (def + (. operator add))
 
