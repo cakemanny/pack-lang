@@ -446,6 +446,215 @@ def test_expand_and_evaluate__syntax(initial_interpreter):
     ]
 
 
+def test_expand_and_evaluate__functionality(initial_interpreter):
+    # Just check that the evaluator doesn't choke
+    text = """\
+    (ns pack.core)
+    (:a {:a 1 :b 2})
+    ({:a 1 :b 2} :a)
+    ({:a 1 :b 2} :c 3)
+    ([1 2 7] 2)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert results == [
+        None,
+        1,
+        1,
+        3,
+        7,
+    ]
+
+
+def test_expand_and_evaluate__if(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (if 1 2)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert results == [None, 2]
+
+
+def test_expand_and_evaluate__def_var_fn(initial_interpreter):
+    text = """\
+    (ns pack.core)
+
+    (def not (fn not [x] (if x false true)))
+    (not false)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert interp.namespaces['pack.core'].defs['not']
+    assert results == [None, Var(Sym('pack.core', 'not'), Any(Fn)), True]
+
+    assert results[1].value.env == Map.empty()
+
+
+class Any:
+    def __init__(self, type=None):
+        self.type = type
+
+    def __eq__(self, o):
+        if self.type is not None:
+            return isinstance(o, self.type)
+        return True
+
+
+def test_expand_and_evaluate__fn(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    ((fn [x] (if x false true)) false)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert results == [None, True]
+
+
+def test_expand_and_evaluate__fn_rest_args(initial_interpreter):
+    text = """\
+    (ns pack.core)
+
+    (def first (fn [xs] (. xs hd)))
+    (def rest (fn [xs] (. xs tl)))
+    (def null? (fn [lst] (if lst false true)))
+    (def foldl
+        (fn [func accum lst]
+            (if (null? lst)
+                accum
+                (foldl func (func accum (first lst)) (rest lst)))))
+
+    (import operator)
+
+    (def +
+        (fn [& numbers]
+            (foldl (. operator add) 0 numbers)))
+    (+ 1 2 3 4)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+    assert results[-1] == 10
+
+
+def test_expand_and_evaluate__redefining(initial_interpreter):
+    # Being able to redefine stuff in the repl can be useful
+    text = """\
+    (ns pack.core)
+
+    (def x 20)
+    (def y (fn [] x))
+    (y) ; 20
+    (def x 40)
+    (y) ; 40
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert results[-3] == 20
+    assert results[-1] == 40
+
+
+def test_expand_and_evaluate__4(initial_interpreter):
+    text = """\
+    (ns pack.core)
+
+    (def not (fn not [x] (if x false true)))
+    {(not false) 1 (not (not false)) 0}
+    [1 2 3 (not 3)]
+    (ns user)
+    (not false)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'user'
+    assert interp.namespaces['pack.core'].defs['not']
+    assert results == [
+        None,
+        Var(Sym('pack.core', 'not'), Any(Fn)),
+        Map.empty().assoc(True, 1).assoc(False, 0),
+        Vec.from_iter([1, 2, 3, False]),
+        None,
+        True,
+    ]
+
+
+def test_expand_and_evaluate__recur(initial_interpreter):
+    # Just check that the evaluator doesn't choke
+    text = """\
+    (ns pack.core)
+    (import operator)
+    (def + (. operator add))
+
+    (def first (fn [xs] (. xs hd)))
+    (def rest (fn [xs] (. xs tl)))
+    (def null? (fn [lst] (if lst false true)))
+    (def foldl
+        (fn [func accum lst]
+            (if (null? lst)
+                accum
+                (recur func (func accum (first lst)) (rest lst)))))
+    (foldl + 0 '(1 2 3 4))
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert results[-1:] == [
+        10
+    ]
+
+
+def test_expand_and_evaluate__loop_recur(initial_interpreter):
+    # Just check that the evaluator doesn't choke
+    text = """\
+    (ns pack.core)
+    (import operator)
+    (def = (. operator eq))
+    (def - (. operator sub))
+    (def * (. operator mul))
+    (def zero? (fn [n] (= n 0)))
+    (def dec (fn [n] (- n 1)))
+
+    (def factorial
+      (fn [n]
+        (loop [cnt n acc 1]
+           (if (zero? cnt)
+                acc
+              (recur (dec cnt) (* acc cnt))))))
+    (factorial 5)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert results[-1:] == [
+        5 * 4 * 3 * 2
+    ]
+
+
 def test_expand_and_evaluate__eval(initial_interpreter):
     # Just check that the evaluator doesn't choke
     text = """\
@@ -531,145 +740,6 @@ def test_expand_and_evaluate__quoting(initial_interpreter):
         read_all_forms("(pack.core/a pack.core/b 3)")[0],
         read_all_forms("(pack.core/a pack.core/b 1 2 3)")[0],
         read_all_forms("(quote pack.core/a)")[0],
-    ]
-
-
-def test_expand_and_evaluate__functionality(initial_interpreter):
-    # Just check that the evaluator doesn't choke
-    text = """\
-    (ns pack.core)
-    (:a {:a 1 :b 2})
-    ({:a 1 :b 2} :a)
-    ({:a 1 :b 2} :c 3)
-    ([1 2 7] 2)
-    """
-    forms = read_all_forms(text)
-
-    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
-
-    assert 'pack.core' in interp.namespaces
-    assert interp.current_ns.name == 'pack.core'
-    assert results == [
-        None,
-        1,
-        1,
-        3,
-        7,
-    ]
-
-
-def test_expand_and_evaluate__if(initial_interpreter):
-    text = """\
-    (ns pack.core)
-    (if 1 2)
-    """
-    forms = read_all_forms(text)
-
-    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
-
-    assert 'pack.core' in interp.namespaces
-    assert interp.current_ns.name == 'pack.core'
-    assert results == [None, 2]
-
-
-def test_expand_and_evaluate__def_var_fn(initial_interpreter):
-    text = """\
-    (ns pack.core)
-
-    (def not (fn not [x] (if x false true)))
-    (not false)
-    """
-    forms = read_all_forms(text)
-
-    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
-
-    assert 'pack.core' in interp.namespaces
-    assert interp.current_ns.name == 'pack.core'
-    assert interp.namespaces['pack.core'].defs['not']
-    assert results == [None, Var(Sym('pack.core', 'not'), Any(Fn)), True]
-
-    assert results[1].value.env == Map.empty()
-
-
-class Any:
-    def __init__(self, type=None):
-        self.type = type
-
-    def __eq__(self, o):
-        if self.type is not None:
-            return isinstance(o, self.type)
-        return True
-
-
-def test_expand_and_evaluate__fn_rest_args(initial_interpreter):
-    text = """\
-    (ns pack.core)
-
-    (def first (fn [xs] (. xs hd)))
-    (def rest (fn [xs] (. xs tl)))
-    (def null? (fn [lst] (if lst false true)))
-    (def foldl
-        (fn [func accum lst]
-            (if (null? lst)
-                accum
-                (foldl func (func accum (first lst)) (rest lst)))))
-
-    (import operator)
-
-    (def +
-        (fn [& numbers]
-            (foldl (. operator add) 0 numbers)))
-    (+ 1 2 3 4)
-    """
-    forms = read_all_forms(text)
-
-    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
-    assert results[-1] == 10
-
-
-def test_expand_and_evaluate__redefining(initial_interpreter):
-    # Being able to redefine stuff in the repl can be useful
-    text = """\
-    (ns pack.core)
-
-    (def x 20)
-    (def y (fn [] x))
-    (y) ; 20
-    (def x 40)
-    (y) ; 40
-    """
-    forms = read_all_forms(text)
-
-    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
-
-    assert results[-3] == 20
-    assert results[-1] == 40
-
-
-def test_expand_and_evaluate__4(initial_interpreter):
-    text = """\
-    (ns pack.core)
-
-    (def not (fn not [x] (if x false true)))
-    {(not false) 1 (not (not false)) 0}
-    [1 2 3 (not 3)]
-    (ns user)
-    (not false)
-    """
-    forms = read_all_forms(text)
-
-    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
-
-    assert 'pack.core' in interp.namespaces
-    assert interp.current_ns.name == 'user'
-    assert interp.namespaces['pack.core'].defs['not']
-    assert results == [
-        None,
-        Var(Sym('pack.core', 'not'), Any(Fn)),
-        Map.empty().assoc(True, 1).assoc(False, 0),
-        Vec.from_iter([1, 2, 3, False]),
-        None,
-        True,
     ]
 
 

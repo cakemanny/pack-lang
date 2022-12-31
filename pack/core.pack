@@ -6,6 +6,8 @@
 
 ;; Data structures
 (def list (fn [& elems] elems))
+(def vector (fn [& elems] ((. (. pack.interp Vec) from_iter) elems)))
+
 
 ;; Logic
 (def not (fn [x] (if x false true)))

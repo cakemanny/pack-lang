@@ -922,6 +922,13 @@ class EvalError(PackLangError):
     pass
 
 
+# We abuse the python exception system to implement tail recursion
+class RecurError(PackLangError):
+    def __init__(self, form, arg_vals):
+        super().__init__('recur must be defined inside a loop or fn: ', str(form))
+        self.arg_vals = arg_vals
+
+
 @dataclass(frozen=True)
 class Namespace:
     name: str
@@ -1105,7 +1112,7 @@ def extract_closure(body, params, interp, env):
                 return m
             # The arguments for if and raise are evaluated, so
             # can just be treated like functions here
-            case Sym(None, 'if' | 'raise' | 'var'):
+            case Sym(None, 'if' | 'raise' | 'var' | 'recur'):
                 return m
             case Sym(None, name) as sym:
                 # Maybe this is also the point to do more macro expanding?
@@ -1126,8 +1133,16 @@ def extract_closure(body, params, interp, env):
             case Cons(Sym(None, '.'), Cons(obj, Cons(_, Nil()))):
                 # onlt the obj is evaluated, not the attr
                 return aux(obj, m, lets)
+            case Cons(Sym(None, '.'), _):
+                raise SyntaxError(f'invald member expression: {expr}')
             case Cons(Sym(None, 'def'), Cons(Sym(), Cons(init, Nil()))):
                 return aux(init, m, lets)
+            # TODO: let* ?
+            case Cons(Sym(None, 'loop'), Cons(Vec() as bindings, Cons(body, Nil()))):
+                for binding, init in take_pairs(bindings):
+                    m = aux(init, m, lets)
+                    lets = lets.assoc(binding, None)
+                return aux(body, m, lets)
             case Cons(Sym(None, 'fn'),
                       Cons(Sym(), Cons(Vec() as fn_params, Cons(body, Nil())))) \
                     | Cons(Sym(None, 'fn'),
@@ -1241,7 +1256,7 @@ def eval_form(form, interp, env):
             var.value = init_val
             return var, interp
 
-        case Cons(Sym(None, 'let*'), Cons(Vec() as bindings, Cons(body))):
+        case Cons(Sym(None, 'let*'), Cons(Vec() as bindings, Cons(body, Nil() | None))):
             if len(bindings) % 2 != 0:
                 raise SyntaxError('uneven number of forms in let bindings')
 
@@ -1255,6 +1270,33 @@ def eval_form(form, interp, env):
             return eval_form(body, interp, env)
         case Cons(Sym(None, 'let*'), _):
             raise SyntaxError(f"invalid let: {form}")
+
+        case Cons(Sym(None, 'loop'), Cons(Vec() as bindings, Cons(body, Nil() | None))):
+            if len(bindings) % 2 != 0:
+                raise SyntaxError('uneven number of forms in loop bindings')
+
+            for binding, init in take_pairs(bindings):
+                if not isinstance(binding, Sym) or binding.ns is not None:
+                    raise SyntaxError(
+                        f'loop does not support destructuring: problem: {binding}'
+                    )
+                init_val, interp = eval_form(init, interp, env)
+                env = env.assoc(binding, init_val)
+            while True:
+                try:
+                    return eval_form(body, interp, env)
+                except RecurError as e:
+                    for (binding, _), val in zip(take_pairs(bindings), e.arg_vals):
+                        env = env.assoc(binding, val)
+        case Cons(Sym(None, 'loop'), _):
+            raise SyntaxError(f"invalid loop: {form}")
+
+        case Cons(Sym(None, 'recur'), args):
+            arg_vals = []
+            for arg in args:
+                arg_val, interp = eval_form(arg, interp, env)
+                arg_vals.append(arg_val)
+            raise RecurError(form, arg_vals)
 
         case Cons(Sym(None, 'if'),
                   Cons(predicate,
@@ -1317,11 +1359,15 @@ def eval_form(form, interp, env):
             for arg in args:
                 arg_val, interp = eval_form(arg, interp, env)
                 arg_vals.append(arg_val)
-            # Assume proc is an Fn
-            if isinstance(proc, IFn):
-                return proc(interp, *arg_vals)
-            # python function
-            return proc(*arg_vals), interp
+            while True:
+                try:
+                    # Assume proc is an Fn
+                    if isinstance(proc, IFn):
+                        return proc(interp, *arg_vals)
+                    # python function
+                    return proc(*arg_vals), interp
+                except RecurError as e:
+                    arg_vals = e.arg_vals
 
         case Sym(None, 'true'):
             return True, interp
