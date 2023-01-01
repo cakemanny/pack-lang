@@ -1,5 +1,6 @@
 import pytest
 
+from pack.interp import FileString
 from pack.interp import (
     try_read, read_sym, read_num, read_str, read_forms, read_all_forms
 )
@@ -231,6 +232,38 @@ def test_hamt_2():
 # -------------
 #  Reader
 # -------------
+
+
+def test_filestring():
+
+    fs = FileString('a', file='fake.pack', lineno=1, col=0)
+    sym, new_fs = read_sym(fs)
+    assert sym, new_fs == (Sym(None, 'a'), '')
+    assert new_fs.file == 'fake.pack'
+    assert new_fs.lineno == 1
+    assert new_fs.col == 1
+
+    assert sym.n.file == 'fake.pack'
+    from pack.interp import location_from
+    assert location_from(sym) == ('fake.pack', 1, 0)
+
+    new_fs = fs[:]
+    assert fs.file == 'fake.pack'
+    assert new_fs.lineno == 1
+    assert new_fs.col == 0
+
+    fs = FileString('(1\n 2\n 3)\n"more"', file='fake.pack', lineno=1, col=0)
+    xs, remaining = try_read(fs)
+    assert remaining == '\n"more"'
+    assert remaining.file == 'fake.pack'
+    assert remaining.lineno == 3
+    assert remaining.col == 3
+
+    fs = FileString('some/crazy', file='fake.pack', lineno=1, col=0)
+    from pack.interp import split_ident
+    some, crazy = split_ident(fs)
+    assert isinstance(some, FileString)
+    assert isinstance(crazy, FileString)
 
 
 def test_read_sym():

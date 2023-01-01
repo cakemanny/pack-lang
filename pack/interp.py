@@ -20,13 +20,10 @@ class Sym:
     ns: Optional[str]
     n: str
 
-    def __str__(self):
+    def __repr__(self):
         if self.ns:
             return self.ns + '/' + self.n
         return self.n
-
-    def __repr__(self):
-        return str(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,13 +31,10 @@ class Keyword:
     ns: Optional[str]
     n: str
 
-    def __str__(self):
+    def __repr__(self):
         if self.ns:
             return f':{self.ns}/{self.n}'
         return f':{self.n}'
-
-    def __repr__(self):
-        return str(self)
 
     def __call__(self, a_map, default=None):
         try:
@@ -125,8 +119,8 @@ class Cons(List):
             result = Cons(x, result)
         return result
 
-    def __str__(self):
-        return '(' + ' '.join(map(str, self)) + ')'
+    def __repr__(self):
+        return '(' + ' '.join(map(repr, self)) + ')'
 
     def __bool__(self):
         return True
@@ -278,17 +272,8 @@ class Vec(Sequence):
     def __call__(self, idx: int):
         return self[idx]
 
-    def __str__(self):
-        return '[' + ' '.join(map(str, self)) + ']'
-
     def __repr__(self):
-        if self._is_leaf():
-            return str(self)
-        return '[' + ' '.join(map(str, (
-            self[0], self[1], self[2],
-            '...',
-            self[-3], self[-2], self[-1],
-        ))) + ']'
+        return '[' + ' '.join(map(repr, self)) + ']'
 
     @staticmethod
     def from_iter(xs: Iterable):
@@ -397,13 +382,10 @@ class ArrayMap(Mapping):
                 return islice(kvs, 1, None, 2)
         return ValuesView()
 
-    def __str__(self):
+    def __repr__(self):
         return '{' + '  '.join(
             f'{k!r} {v!r}' for (k, v) in self.items()
         ) + '}'
-
-    def __repr__(self):
-        return str(self)
 
     def assoc(self, key, value):
         new_kvs = list(self.kvs)
@@ -594,13 +576,10 @@ class Map(Mapping):
             return self._with_replacement(idx, new_entry, leaf=True)
         return self._with_replacement(idx, new_subnode, leaf=False)
 
-    def __str__(self):
+    def __repr__(self):
         return '{' + '  '.join(
             f'{k!r} {v!r}' for (k, v) in self.items()
         ) + '}'
-
-    def __repr__(self):
-        return str(self)
 
     @classmethod
     def empty(cls):
@@ -639,6 +618,56 @@ class Special:
 #  Reader
 # -------------
 
+class FileString(str):
+    """
+    A string that knows where it came from in a file
+    """
+
+    def __new__(cls, s, file, lineno, col):
+        obj = super().__new__(cls, s)
+        obj.__init__(s, file, lineno, col)
+        return obj
+
+    def __init__(self, s, file, lineno, col):
+        super().__init__()
+        self.file = file
+        self.lineno = lineno
+        self.col = col
+
+    def __getitem__(self, idx):
+        if isinstance(idx, slice):
+            start = idx.start or 0
+            if start != 0:
+                lineno = self.lineno
+                col = self.col
+                for c in islice(self, 0, start):
+                    if c == '\n':
+                        col = 0
+                        lineno += 1
+                    else:
+                        col += 1
+                return self.__class__(
+                    super().__getitem__(idx), self.file, lineno, col
+                )
+            return self.__class__(
+                super().__getitem__(idx), self.file, self.lineno, self.col
+            )
+
+        # Not worried about encumbering a single character
+        return super().__getitem__(idx)
+
+    def __repr__(self):
+        return f"{self.file}:{self.lineno}:{self.col} " + super().__repr__()
+
+
+def location_from(obj):
+    match obj:
+        case Sym(FileString() as ns, _):
+            return ns.file, ns.lineno, ns.col
+        case Sym(_, FileString() as n):
+            return n.file, n.lineno, n.col
+    return None
+
 
 WHITESPACE = (' ', '\n', '\t', '\v')
 WHITESPACE_OR_COMMENT_START = WHITESPACE + (';',)
@@ -663,11 +692,8 @@ def is_ident(c):
 
 def split_ident(n):
     if '/' in n[:-1]:
-        match n.split('/', 1):
-            case [ns, n]:
-                return ns, n
-            case [n]:
-                return None, n
+        idx = n.index('/')
+        return n[:idx], n[idx + 1:]
     return None, n
 
 
@@ -832,6 +858,8 @@ class SyntaxError(PackLangError):
 
 class Unmatched(SyntaxError):
     "something ended that hadn't begun"
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 
 class Unclosed(SyntaxError):
@@ -903,7 +931,8 @@ def read_forms(previous_lines='', input=input, prompt='=> '):
 
     line = input(prompt if not previous_lines else '')
 
-    remaining = previous_lines + '\n' + line
+    remaining = previous_lines + '\n' + line if previous_lines else line
+    remaining = FileString(remaining, "<stdin>", lineno=1, col=0)
     try:
         return read_all_forms(remaining)
     except Unclosed:
@@ -919,7 +948,12 @@ class SemanticError(PackLangError):
 
 
 class EvalError(PackLangError):
-    pass
+    def __init__(self, msg, /, location=None):
+        if location is not None:
+            super().__init__(msg, location)
+        else:
+            super().__init__(msg)
+        self.location = location
 
 
 # We abuse the python exception system to implement tail recursion
@@ -989,11 +1023,13 @@ class Interpreter:
         try:
             ns = self.namespaces[ns_name]
         except KeyError:
-            raise EvalError(f"no such namespace {ns_name}") from None
+            raise EvalError(f"no such namespace {ns_name}", location_from(sym)) from None
         try:
             return ns.defs[sym.n]
         except KeyError:
-            raise EvalError(f'{sym!r} not found in this context') from None
+            raise EvalError(
+                f'{sym!r} not found in this context', location_from(sym)
+            ) from None
 
 
 @dataclass
@@ -1009,11 +1045,8 @@ class Var:
         self.value = value
         self.metadata = metadata
 
-    def __str__(self):
-        return f"#'{self.symbol}"
-
     def __repr__(self):
-        return str(self)
+        return f"#'{self.symbol}"
 
 
 KW_MACRO = Keyword(None, "macro")
@@ -1041,20 +1074,6 @@ class IFn:
     """
     def __call__(self, interp, *args) -> (Any, Interpreter):
         raise NotImplementedError()
-
-
-class RTFn(IFn):
-    def __init__(self, func):
-        self.func = func
-
-    def __call__(self, interp, *args):
-        if not isinstance(interp, Interpreter):
-            breakpoint()
-            raise TypeError('first argument must be an Interpreter')
-        return self.func(interp, *args)
-
-    def __repr__(self):
-        return f'<RTFn({self.func}) object at {hex(id(self))}>'
 
 
 class Fn(IFn):
@@ -1088,13 +1107,34 @@ class Fn(IFn):
         return f'<Fn({self.name}) object at {hex(id(self))}>'
 
 
+class RTFn(IFn):
+    "For creating IFn instances that are able to affect the interpreter"
+    def __init__(self, func):
+        self.func = func
+
+    def __call__(self, interp, *args) -> (Any, Interpreter):
+        if not isinstance(interp, Interpreter):
+            raise TypeError('first argument must be an Interpreter')
+        return self.func(interp, *args)
+
+    def __repr__(self):
+        return f'<RTFn({self.func}) object at {hex(id(self))}>'
+
+
 def _rt_apply(interp, f, args):
     if isinstance(f, IFn):
         return f(interp, *args)
     return f(*args), interp
 
 
+def _rt_eval(interp, form):
+    [result], interp = expand_and_evaluate_forms([form], interp)
+    return result, interp
+
+
 rt_apply = RTFn(_rt_apply)
+rt_eval = RTFn(_rt_eval)
+"""eval - as to be imported and used from lisp programs. evaluates a single form"""
 
 
 def extract_closure(body, params, interp, env):
@@ -1197,7 +1237,9 @@ def find_module(module_name):
 
 def load_module(module_path, interp):
     with open(module_path) as f:
-        forms = read_all_forms(f.read())
+        forms = read_all_forms(
+            FileString(f.read(), file=module_path, lineno=1, col=0)
+        )
     _, interp = expand_and_evaluate_forms(forms, interp)
     return interp
 
@@ -1553,15 +1595,6 @@ def expand_and_evaluate_forms(forms, interp):
     return results, interp
 
 
-def _rt_eval(interp, form):
-    [result], interp = expand_and_evaluate_forms([form], interp)
-    return result, interp
-
-
-rt_eval = RTFn(_rt_eval)
-"""eval - as to be imported and used from lisp programs. evaluates a single form"""
-
-
 def main():
 
     interp = Interpreter(Map.empty())
@@ -1585,7 +1618,7 @@ def main():
             try:
                 results, interp = expand_and_evaluate_forms(forms, interp)
                 for result in results:
-                    print(result)
+                    print(repr(result))
             except (NotImplementedError, PackLangError) as e:
                 print(repr(e))
             except Exception:
@@ -1593,5 +1626,7 @@ def main():
 
     else:
 
-        forms = read_all_forms(sys.stdin.read())
+        forms = read_all_forms(
+            FileString(sys.stdin.read(), file="<stdin>", lineno=1, col=0)
+        )
         _, interp = expand_and_evaluate_forms(forms, interp)
