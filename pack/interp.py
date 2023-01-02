@@ -48,14 +48,18 @@ class Keyword:
 class List:
     @staticmethod
     def from_iter(it):
+        if isinstance(it, List):
+            return it
+
         try:
-            xs = nil
-            for x in reversed(it):
-                xs = Cons(x, xs)
-            return xs
+            rev_it = reversed(it)
         except TypeError:
             # not reversible
-            return List.from_iter(tuple(it))
+            rev_it = reversed(tuple(it))
+        xs = nil
+        for x in rev_it:
+            xs = Cons(x, xs)
+        return xs
 
 
 class Nil(List):
@@ -95,6 +99,7 @@ class Nil(List):
 
 
 nil = Nil()
+Nil.__new__ = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +134,8 @@ class Cons(List):
         return sum(map(lambda _: 1, self), 0)
 
     def __add__(self, o):
+        if o is nil or o is None:
+            return self
         if not isinstance(o, List):
             raise TypeError(
                 'can only concatenate List (not "%s") to List'
@@ -661,11 +668,19 @@ class FileString(str):
 
 
 def location_from(obj):
+    def from_filestring(fs):
+        return fs.file, fs.lineno, fs.col
     match obj:
+        case FileString() as s:
+            return from_filestring(s)
         case Sym(FileString() as ns, _):
-            return ns.file, ns.lineno, ns.col
+            return from_filestring(ns)
         case Sym(_, FileString() as n):
-            return n.file, n.lineno, n.col
+            return from_filestring(n)
+        case Keyword(FileString() as ns, _):
+            return from_filestring(ns)
+        case Sym(_, FileString() as n):
+            return from_filestring(n)
     return None
 
 
@@ -730,7 +745,7 @@ def read_num(text, prefix=''):
         else:
             break
     if point > 1:
-        raise SyntaxError("invalid number literal: multiple '.'s")
+        raise SyntaxError("invalid number literal: multiple '.'s", location_from(text))
     if point == 1:
         return float(prefix + text[:i]), text[i:]
     return int(prefix + text[:i]), text[i:]
@@ -738,7 +753,8 @@ def read_num(text, prefix=''):
 
 def read_str(text):
     assert text[0] == '"'
-    text = text[1:]
+    # reference to text for producing error locations
+    location_text = text
 
     escapes = {
         'a': '\a', 'b': '\b', 'f': '\f', 'r': '\r', 'n': '\n',
@@ -768,13 +784,16 @@ def read_str(text):
                 elif c in escapes:
                     yield escapes[c]
                 else:
-                    raise SyntaxError(f'unknown escape sequence \\{c}')
+                    raise SyntaxError(
+                        f'unknown escape sequence \\{c}',
+                        location_from(location_text)
+                    )
                 seg_start += 2
             i += 1
         if i == n:
-            raise Unclosed('"')
+            raise Unclosed('"', location_from(location_text))
 
-    segments = list(aux(text))
+    segments = list(aux(text[1:]))
     return ''.join(segments[:-1]), segments[-1]
 
 
@@ -806,29 +825,31 @@ def close_sequence(opener, elements):
                 return Map.from_iter(take_pairs(elements))
             except ValueError:
                 raise SyntaxError(
-                    'A map literal must contain an even number of forms'
+                    'A map literal must contain an even number of forms',
+                    location_from(elements)
                 ) from None
     raise ValueError('unknown opener', opener)
 
 
 def read_list(opener, text, closing):
+    remaining = text
     elements = []
     while True:
         try:
-            elem, text = try_read(text)
+            elem, remaining = try_read(remaining)
             if elem is None:
-                raise Unclosed(opener, text)
+                raise Unclosed(opener, location_from(text))
             elements.append(elem)
-        except Unmatched as e:
-            if e.args[0] == closing:
-                return close_sequence(opener, elements), e.args[1]
+        except Unmatched as unmatched:
+            if unmatched.c == closing:
+                return close_sequence(opener, elements), unmatched.remaining
             raise
 
 
 def read_quoted_like(text, macro, prefix):
     to_quote, remaining = try_read(text)
     if to_quote is None:
-        raise Unclosed(prefix, remaining)
+        raise Unclosed(prefix, location_from(text))
     return Cons(Sym(None, macro), Cons(to_quote, nil)), remaining
 
 
@@ -849,7 +870,12 @@ def read_unquote_splicing(text):
 
 
 class PackLangError(Exception):
-    pass
+    def __init__(self, msg, /, location=None):
+        if location is not None:
+            super().__init__(msg, location)
+        else:
+            super().__init__(msg)
+        self.location = location
 
 
 class SyntaxError(PackLangError):
@@ -858,8 +884,13 @@ class SyntaxError(PackLangError):
 
 class Unmatched(SyntaxError):
     "something ended that hadn't begun"
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, c, remaining, location=None):
+        super().__init__(c, location)
+        # c is the character that was unmatched
+        self.c = c
+        # We store the remaining text on the exception in case it's
+        # possible to recover. (In fact that's how we read lists.)
+        self.remaining = remaining
 
 
 class Unclosed(SyntaxError):
@@ -890,7 +921,7 @@ def try_read(text):
         case '(' | '[' | '{':
             return read_list(c, text[1:], closer[c])
         case ')' | ']' | '}':
-            raise Unmatched(c, text[1:])
+            raise Unmatched(c, text[1:], location_from(text))
         case "'":
             return read_quoted(text[1:])
         case "`":
@@ -948,19 +979,19 @@ class SemanticError(PackLangError):
 
 
 class EvalError(PackLangError):
-    def __init__(self, msg, /, location=None):
-        if location is not None:
-            super().__init__(msg, location)
-        else:
-            super().__init__(msg)
-        self.location = location
+    pass
 
 
 # We abuse the python exception system to implement tail recursion
 class RecurError(PackLangError):
     def __init__(self, form, arg_vals):
-        super().__init__('recur must be defined inside a loop or fn: ', str(form))
+        super().__init__("recur must be defined inside a loop or fn",
+                         location_from(form))
+        self.form = form
         self.arg_vals = arg_vals
+
+    def __str__(self):
+        return f"recur must be defined inside a loop or fn: {self.form}"
 
 
 @dataclass(frozen=True)
@@ -1018,12 +1049,14 @@ class Interpreter:
         if sym in env:
             if isinstance(env[sym], Var):
                 return env[sym]
-            raise SemanticError('{sym} is not a var')
+            raise SemanticError('{sym} is not a var', location_from(sym))
         ns_name = sym.ns or self.current_ns.name
         try:
             ns = self.namespaces[ns_name]
         except KeyError:
-            raise EvalError(f"no such namespace {ns_name}", location_from(sym)) from None
+            raise EvalError(
+                f"no such namespace: {ns_name}", location_from(sym)
+            ) from None
         try:
             return ns.defs[sym.n]
         except KeyError:
@@ -1073,7 +1106,7 @@ class IFn:
     All lisp functions adhere to this.
     """
     def __call__(self, interp, *args) -> (Any, Interpreter):
-        raise NotImplementedError()
+        raise NotImplementedError
 
 
 class Fn(IFn):
@@ -1094,7 +1127,7 @@ class Fn(IFn):
 
     def __call__(self, interp, *args):
         if not self.restparam and len(args) != len(self.params):
-            raise EvalError('incorrect number of arguments')
+            raise EvalError('incorrect number of arguments', location_from(args))
         env = self.env
         for p, arg in zip(self.params, args):
             env = env.assoc(p, arg)
@@ -1167,14 +1200,17 @@ def extract_closure(body, params, interp, env):
                 if name in interp.default_ns.defs:
                     return m.assoc(sym, interp.default_ns.defs[name])
                 raise EvalError(
-                    f'Could not resolve symbol: {sym!r} in this context'
+                    f'Could not resolve symbol: {sym!r} in this context',
+                    location_from(sym)
                 )
             # Special forms
             case Cons(Sym(None, '.'), Cons(obj, Cons(_, Nil()))):
                 # onlt the obj is evaluated, not the attr
                 return aux(obj, m, lets)
             case Cons(Sym(None, '.'), _):
-                raise SyntaxError(f'invald member expression: {expr}')
+                raise SyntaxError(
+                    f'invald member expression: {expr}', location_from(expr)
+                )
             case Cons(Sym(None, 'def'), Cons(Sym(), Cons(init, Nil()))):
                 return aux(init, m, lets)
             # TODO: let* ?
@@ -1290,7 +1326,7 @@ def eval_form(form, interp, env):
             obj, interp = eval_form(obj_expr, interp, env)
             return getattr(obj, attr), interp
         case Cons(Sym(None, '.'), _):
-            raise SyntaxError(f'invald member expression: {form}')
+            raise SyntaxError(f'invald member expression: {form}', location_from(form))
 
         case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Cons(init, Nil()))):
             init_val, interp = eval_form(init, interp, env)
@@ -1301,27 +1337,33 @@ def eval_form(form, interp, env):
 
         case Cons(Sym(None, 'let*'), Cons(Vec() as bindings, Cons(body, Nil() | None))):
             if len(bindings) % 2 != 0:
-                raise SyntaxError('uneven number of forms in let bindings')
+                raise SyntaxError(
+                    'uneven number of forms in let bindings', location_from(bindings)
+                )
 
             for binding, init in take_pairs(bindings):
                 if not isinstance(binding, Sym) or binding.ns is not None:
                     raise SyntaxError(
-                        f'let* does not support destructuring: problem: {binding}'
+                        f'let* does not support destructuring: problem: {binding}',
+                        location_from(binding)
                     )
                 init_val, interp = eval_form(init, interp, env)
                 env = env.assoc(binding, init_val)
             return eval_form(body, interp, env)
         case Cons(Sym(None, 'let*'), _):
-            raise SyntaxError(f"invalid let: {form}")
+            raise SyntaxError(f"invalid let: {form}", location_from(form))
 
         case Cons(Sym(None, 'loop'), Cons(Vec() as bindings, Cons(body, Nil() | None))):
             if len(bindings) % 2 != 0:
-                raise SyntaxError('uneven number of forms in loop bindings')
+                raise SyntaxError(
+                    'uneven number of forms in loop bindings', location_from(bindings)
+                )
 
             for binding, init in take_pairs(bindings):
                 if not isinstance(binding, Sym) or binding.ns is not None:
                     raise SyntaxError(
-                        f'loop does not support destructuring: problem: {binding}'
+                        f'loop does not support destructuring: problem: {binding}',
+                        location_from(binding)
                     )
                 init_val, interp = eval_form(init, interp, env)
                 env = env.assoc(binding, init_val)
@@ -1332,7 +1374,7 @@ def eval_form(form, interp, env):
                     for (binding, _), val in zip(take_pairs(bindings), e.arg_vals):
                         env = env.assoc(binding, val)
         case Cons(Sym(None, 'loop'), _):
-            raise SyntaxError(f"invalid loop: {form}")
+            raise SyntaxError(f"invalid loop: {form}", location_from(form))
 
         case Cons(Sym(None, 'recur'), args):
             arg_vals = []
@@ -1354,7 +1396,9 @@ def eval_form(form, interp, env):
                 return eval_form(consequent, interp, env)
             return None, interp
         case Cons(Sym(None, 'if')):
-            raise SyntaxError(f'something is wrong with this if: {form}')
+            raise SyntaxError(
+                f'something is wrong with this if: {form}', location_from(form)
+            )
 
         case Cons(Sym(None, 'fn'), Cons(Vec() as params, Cons(body, Nil()))):
             closure = extract_closure(body, params, interp, env)
@@ -1365,14 +1409,16 @@ def eval_form(form, interp, env):
             closure = extract_closure(body, params, interp, env)
             return Fn(name, params, body, closure), interp
         case Cons(Sym(None, 'fn'), _):
-            raise SyntaxError(f'invalid fn form: {form}')
+            raise SyntaxError(f'invalid fn form: {form}', location_from(form))
 
         case Cons(Sym(None, 'raise'), Cons(raisable_form, Nil() | None)):
             # FIXME: this loses the effects of the evaluation on the interp
             raisable, interp = eval_form(raisable_form, interp, env)
             raise raisable
         case Cons(Sym(None, 'raise')):
-            raise SyntaxError(f"invalid special form 'raise': {form}")
+            raise SyntaxError(
+                f"invalid special form 'raise': {form}", location_from(form)
+            )
 
         case Cons(Sym(None, 'quote'), Cons(arg, Nil())):
             return arg, interp
@@ -1434,7 +1480,10 @@ def eval_form(form, interp, env):
             # TODO: put stuff from pack.core into aliases
             if name in interp.default_ns.defs:
                 return interp.default_ns.defs[name].value, interp
-            raise EvalError(f'Could not resolve symbol: {sym} in this context')
+            raise EvalError(
+                f'Could not resolve symbol: {sym} in this context',
+                location_from(sym)
+            )
         case Sym(ns_name, name) as sym:
             var = interp.resolve_symbol(sym, env)
             if isinstance(var, Var):
@@ -1543,7 +1592,7 @@ def expanding_quasi_quote(form, interp):
         case Cons(Sym(None, 'unquote'), Cons(x, Nil())):
             return x
         case Cons(Sym(None, 'unquote-splicing'), Cons(x, Nil())):
-            raise SyntaxError('"~@" found not inside a sequence')
+            raise SyntaxError('"~@" found not inside a sequence', location_from(form))
         case Nil():
             return nil
         case Cons() as lst:

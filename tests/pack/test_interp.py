@@ -6,6 +6,7 @@ from pack.interp import (
 )
 from pack.interp import Unmatched, SyntaxError, Unclosed
 from pack.interp import Sym, Keyword, Vec, ArrayMap, Map, List, Cons, nil
+from pack.interp import SemanticError, RecurError, EvalError
 from pack.interp import Interpreter, Var, Fn, expand_and_evaluate_forms
 
 
@@ -449,8 +450,19 @@ def test_expand_and_evaluate__ns(initial_interpreter):
     assert results == [None]
 
 
+def test_expand_and_evaluate__ns_error(initial_interpreter):
+    text = """\
+    (ns "pack.core")
+    """
+    forms = read_all_forms(text)
+
+    with pytest.raises(SemanticError) as exc_info:
+        expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert "ns expects a symbol" in str(exc_info.value)
+
+
 def test_expand_and_evaluate__syntax(initial_interpreter):
-    # Just check that the evaluator doesn't choke
     text = """\
     (ns pack.core)
     :a-keyword
@@ -480,7 +492,6 @@ def test_expand_and_evaluate__syntax(initial_interpreter):
 
 
 def test_expand_and_evaluate__functionality(initial_interpreter):
-    # Just check that the evaluator doesn't choke
     text = """\
     (ns pack.core)
     (:a {:a 1 :b 2})
@@ -534,6 +545,34 @@ def test_expand_and_evaluate__def_var_fn(initial_interpreter):
     assert results == [None, Var(Sym('pack.core', 'not'), Any(Fn)), True]
 
     assert results[1].value.env == Map.empty()
+
+
+def test_expand_and_evaluate__resolve_error(initial_interpreter):
+    import textwrap
+    text = textwrap.dedent("""\
+    (ns pack.core)
+    does-not-exist-yet
+    """)
+    print(text.splitlines())
+    forms = read_all_forms(FileString(text, "fake.pack", 1, 0))
+
+    with pytest.raises(EvalError) as exc_info:
+        expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert "not resolve symbol: does-not-exist-yet" in str(exc_info.value)
+    assert exc_info.value.location == ("fake.pack", 2, 0)
+
+    text = textwrap.dedent("""\
+    (ns pack.core)
+    no-such-ns/does-not-exist-yet
+    """)
+    forms = read_all_forms(FileString(text, "fake.pack", 1, 0))
+
+    with pytest.raises(EvalError) as exc_info:
+        expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert "no such namespace: no-such-ns" in str(exc_info.value)
+    assert exc_info.value.location == ("fake.pack", 2, 0)
 
 
 class Any:
@@ -633,7 +672,6 @@ def test_expand_and_evaluate__4(initial_interpreter):
 
 
 def test_expand_and_evaluate__recur(initial_interpreter):
-    # Just check that the evaluator doesn't choke
     text = """\
     (ns pack.core)
     (import operator)
@@ -661,7 +699,6 @@ def test_expand_and_evaluate__recur(initial_interpreter):
 
 
 def test_expand_and_evaluate__loop_recur(initial_interpreter):
-    # Just check that the evaluator doesn't choke
     text = """\
     (ns pack.core)
     (import operator)
@@ -688,8 +725,18 @@ def test_expand_and_evaluate__loop_recur(initial_interpreter):
     ]
 
 
+def test_expand_and_evaluate__recur_error(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (recur 1 2)
+    """
+    forms = read_all_forms(text)
+
+    with pytest.raises(RecurError):
+        expand_and_evaluate_forms(forms, initial_interpreter)
+
+
 def test_expand_and_evaluate__eval(initial_interpreter):
-    # Just check that the evaluator doesn't choke
     text = """\
     (ns pack.core)
     (import pack.interp)
