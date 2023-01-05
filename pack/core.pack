@@ -6,8 +6,18 @@
 (def eval (. pack.interp rt_eval))
 (def apply (. pack.interp rt_apply))
 
+;; Logic
+(def not (fn [x] (if x false true)))
+
+;; Arithmatic
+(def + (. operator add))
+(def - (. operator sub))
+(def * (. operator mul))
+(def / (. operator truediv))
+
 ;; Data structures
 (def list (fn [& elems] elems))
+(def list? (fn [xs] ((. builtins isinstance) xs (. pack.interp List))))
 (def vector (fn [& elems] ((. (. pack.interp Vec) from_iter) elems)))
 (def hash-map
   (fn [& elems]
@@ -15,7 +25,11 @@
            map-from-entries (. (. pack.interp Map) from_iter)]
        (map-from-entries kvs))))
 
-(def + (. operator add))
+(def assoc
+  (fn [m k v]
+    (if m
+      ((. m assoc) k v)
+      {k v})))
 
 (def first (fn [xs] (. xs hd)))
 (def rest (fn [xs] (. xs tl)))
@@ -47,14 +61,5 @@
 ;        (+ (first elems) (apply concat (rest elems)))
 ;        (first elems))
 ;      nil)))
-
-;; Logic
-(def not (fn [x] (if x false true)))
-
-;; Arithmatic
-(def + (. operator add))
-(def - (. operator sub))
-(def * (. operator mul))
-(def / (. operator truediv))
 
 ;; vim:ft=clojure:
