@@ -7,7 +7,7 @@ from collections.abc import Sequence, Mapping, Set
 from dataclasses import dataclass
 from functools import reduce, partial
 from itertools import chain, islice
-from typing import Any, Optional, Collection, Iterable, Iterator, Callable
+from typing import Any, Optional, Collection, Iterable, Iterator
 
 
 # ----------------
@@ -1007,9 +1007,24 @@ class Namespace:
         return dataclasses.replace(self, aliases=f(self.aliases))
 
 
+def initial_pack_core():
+    # Creates pack.core with some magic interpreter variables
+    # This is not the full contents of pack.core. See pack/core.pack
+    return Namespace(
+        'pack.core',
+        defs=ArrayMap.empty()
+        .assoc('*ns*', Var(Sym('pack.core', '*ns*')))
+        .assoc('*compile*', Var(Sym('pack.core', '*compile*'), False))
+    )
+
+
 @dataclass(frozen=True)
 class Interpreter:
-    namespaces: Map | ArrayMap  # str -> Namespace
+    namespaces: Map | ArrayMap = dataclasses.field(
+        default_factory=lambda: ArrayMap.empty().assoc(
+            'pack.core', initial_pack_core()
+        )
+    )  # str -> Namespace
 
     def switch_namespace(self, name: str):
         assert isinstance(name, str)
@@ -1063,6 +1078,10 @@ class Interpreter:
             raise EvalError(
                 f'{sym!r} not found in this context', location_from(sym)
             ) from None
+
+    @property
+    def compilation_enabled(self):
+        return self.default_ns.defs['*compile*'].value
 
 
 @dataclass
@@ -1280,6 +1299,62 @@ def load_module(module_path, interp):
     return interp
 
 
+# This is in ultra-draft idea mode at the moment
+def compile_fn(name, params, body, interp, env):
+    import keyword
+
+    class Uncompilable(Exception):
+        pass
+
+    closure = extract_closure(body, params, interp, env)
+
+    def create_fn(body_lines):
+        # FIXME: we will almost definitely have to do some param name
+        # conversion
+        args = ', '.join([sym.n for sym in params])
+        fn_body = '\n'.join([f'  {b}' for b in body_lines])
+        fn_name = name or f'fn_{hash((params, body, interp, env))}'
+        if keyword.iskeyword(fn_name):
+            fn_name = fn_name + '_'
+        txt = f' def {fn_name}({args}):\n{fn_body}'
+
+        locals = {sym.n: v for (sym, v) in closure.items()}
+        local_vars = ', '.join(locals.keys())
+        txt = f"def __create_fn__({local_vars}):\n{txt}\n return {fn_name}"
+        ns = {}
+        exec(txt, None, ns)
+        return ns['__create_fn__'](**locals)
+
+    def compile_expr(expr, env):
+        match expr:
+            case Sym(None, 'false'):
+                return 'False'
+            case Sym(None, 'true'):
+                return 'True'
+            case Sym(None, 'nil'):
+                return 'None'
+            case Sym(None, n) as sym:
+                if sym in params or sym in closure:
+                    return n
+                raise Uncompilable(f'unresolved: {n}')
+            case Cons(Sym(None, 'if'),
+                      Cons(predicate,
+                           Cons(consequent, Cons(alternative, Nil())))):
+                c = compile_expr(consequent, env)
+                p = compile_expr(predicate, env)
+                a = compile_expr(alternative, env)
+                return f'({c}) if ({p}) else ({a})'
+            case _:
+                raise Uncompilable(expr)
+
+    try:
+        body_lines = ['return ' + compile_expr(body, env)]
+        return create_fn(body_lines)
+    except Uncompilable:
+        traceback.print_exc()
+        return None
+
+
 def eval_form(form, interp, env):
     match form:
         case x if x is nil:
@@ -1405,6 +1480,10 @@ def eval_form(form, interp, env):
             return Fn(None, params, body, closure), interp
         case Cons(Sym(None, 'fn'),
                   Cons(Sym(None, name), Cons(Vec() as params, Cons(body, Nil())))):
+            if interp.compilation_enabled:
+                compiled = compile_fn(name, params, body, interp, env)
+                if compiled is not None:
+                    return compiled, interp
             # TODO: create a var to store the name in?
             closure = extract_closure(body, params, interp, env)
             return Fn(name, params, body, closure), interp
@@ -1509,7 +1588,7 @@ def eval_form(form, interp, env):
         # These have to go at the bottom because map, vec and keyword, etc
         # implement callable as well, but we are just wanting to deal with
         # python functions here
-        case f if isinstance(f, Callable):
+        case f if callable(f):
             return f, interp
 
     raise NotImplementedError(form)
@@ -1646,7 +1725,7 @@ def expand_and_evaluate_forms(forms, interp):
 
 def main():
 
-    interp = Interpreter(Map.empty())
+    interp = Interpreter()
 
     interp = load_module(find_module('pack.core'), interp)
 

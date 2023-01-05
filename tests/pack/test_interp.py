@@ -10,6 +10,17 @@ from pack.interp import SemanticError, RecurError, EvalError
 from pack.interp import Interpreter, Var, Fn, expand_and_evaluate_forms
 
 
+class Any:
+    "makes some assertions a little nicer"
+    def __init__(self, type=None):
+        self.type = type
+
+    def __eq__(self, o):
+        if self.type is not None:
+            return isinstance(o, self.type)
+        return True
+
+
 # ----------------
 #  Data Structures
 # ----------------
@@ -434,7 +445,7 @@ def test_to_module_path():
 
 @pytest.fixture
 def initial_interpreter():
-    return Interpreter(Map.empty())
+    return Interpreter()
 
 
 def test_expand_and_evaluate__ns(initial_interpreter):
@@ -573,16 +584,6 @@ def test_expand_and_evaluate__resolve_error(initial_interpreter):
 
     assert "no such namespace: no-such-ns" in str(exc_info.value)
     assert exc_info.value.location == ("fake.pack", 2, 0)
-
-
-class Any:
-    def __init__(self, type=None):
-        self.type = type
-
-    def __eq__(self, o):
-        if self.type is not None:
-            return isinstance(o, self.type)
-        return True
 
 
 def test_expand_and_evaluate__fn(initial_interpreter):
@@ -1052,4 +1053,34 @@ def test_expand_and_evaluate__refer(initial_interpreter):
     assert results[-2] == [
         5,
         Var(Sym('example', 'xxx'), Any(Fn))
+    ]
+
+
+# -------------
+#  Interpreter
+# -------------
+
+
+def test_compiler__1(initial_interpreter):
+    from typing import Callable
+
+    text = """\
+    (ns pack.core)
+    (def *compile* true)
+
+    (def not (fn not [x] (if x false true)))
+    (not false)
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'pack.core'
+    assert interp.namespaces['pack.core'].defs['not']
+    assert results == [
+        None,
+        Var(Sym('pack.core', '*compile*'), True),
+        Var(Sym('pack.core', 'not'), Any(Callable)),
+        True
     ]
