@@ -801,6 +801,23 @@ def test_expand_quasi_quotes(initial_interpreter):
         """
     )[0]
 
+    # Check that we expand withing data forms
+    form = read_all_forms(" [`a `b] ")[0]
+    expanded = expand_quasi_quotes(form, interp)
+    assert expanded == read_all_forms(
+        """
+        [(quote pack.core/a) (quote pack.core/b)]
+        """
+    )[0]
+
+    form = read_all_forms(" {`a `b} ")[0]
+    expanded = expand_quasi_quotes(form, interp)
+    assert expanded == read_all_forms(
+        """
+        {(quote pack.core/a) (quote pack.core/b)}
+        """
+    )[0]
+
 
 def test_expand_and_evaluate__quoting(initial_interpreter):
     text = """\

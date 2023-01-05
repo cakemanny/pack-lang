@@ -1698,16 +1698,18 @@ def expanding_quasi_quote(form, interp):
 
 
 def expand_quasi_quotes(form, interp):
+    recur = partial(expand_quasi_quotes, interp=interp)
     match form:
         case Cons(Sym(None, 'quasiquote'), Cons(quoted_form, Nil())):
-            return expanding_quasi_quote(
-                expand_quasi_quotes(quoted_form, interp),
-                interp,
-            )
+            return expanding_quasi_quote(recur(quoted_form), interp)
         case Cons() as lst:
-            f = partial(expand_quasi_quotes, interp=interp)
-            return List.from_iter(map(f, lst))
-        # TODO: vectors and maps too
+            return List.from_iter(map(recur, lst))
+        case Vec() as vec:
+            return Vec.from_iter(map(recur, vec))
+        case ArrayMap() as m:
+            return ArrayMap.from_iter((recur(k), recur(v)) for (k, v) in m.items())
+        case Map() as m:
+            return Map.from_iter((recur(k), recur(v)) for (k, v) in m.items())
         case other:
             return other
 
