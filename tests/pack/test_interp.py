@@ -1074,8 +1074,26 @@ def test_expand_and_evaluate__refer(initial_interpreter):
 
 
 # -------------
-#  Interpreter
+#  Compiler
 # -------------
+
+
+def test_compiler__0(initial_interpreter):
+    from pack.interp import compile_fn
+
+    text = """\
+    (ns pack.core)
+    (def *compile* false)
+    (fn not [x] (if x false true))
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+    assert results[-1] == Any(Fn)
+
+    fn = results[-1]
+    lines = compile_fn(fn, interp, mode='lines')
+    assert lines == ['return (False) if (x) else (True)']
 
 
 def test_compiler__1(initial_interpreter):
@@ -1101,3 +1119,52 @@ def test_compiler__1(initial_interpreter):
         Var(Sym('pack.core', 'not'), Any(Callable)),
         True
     ]
+
+
+@pytest.mark.parametrize('fn_txt,expected_lines', [
+    ('(fn f [x] (. x name))', ['return x.name']),
+    ('(fn f [] "a string")', ["return 'a string'"]),
+    ('(fn f [] 5)', ["return 5"]),
+    ('(fn f [] 5.9)', ["return 5.9"]),
+    ('(fn f [] ((. "hi" islower)))', ["return ('hi'.islower)()"]),
+    ('(fn f [] ((. "hi" index) "i"))', ["return ('hi'.index)('i')"]),
+])
+def test_compiler__simple_expressions(
+        fn_txt, expected_lines, initial_interpreter
+):
+    from pack.interp import compile_fn
+
+    text = f"""\
+    (ns pack.core)
+    (def *compile* false)
+    {fn_txt}
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+    assert results[-1] == Any(Fn)
+
+    fn = results[-1]
+    lines = compile_fn(fn, interp, mode='lines')
+
+    assert lines == expected_lines
+
+
+def test_compiler__references(initial_interpreter):
+    from pack.interp import compile_fn
+
+    text = """\
+    (ns pack.core)
+    (def *compile* false)
+    (def not (fn not [x] (if x false true)))
+    ; refer to not
+    (fn rest [lst] (if (not lst) nil (. lst tl)))
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+    assert results[-1] == Any(Fn)
+
+    fn = results[-1]
+    lines = compile_fn(fn, interp, mode='lines')
+    assert lines == ['return (None) if ((not__.value)(lst)) else (lst.tl)']

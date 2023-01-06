@@ -99,7 +99,8 @@ class Nil(List):
 
 
 nil = Nil()
-Nil.__new__ = None
+# all instances of Nil() are nil
+Nil.__new__ = lambda cls: nil
 
 
 @dataclass(frozen=True, slots=True)
@@ -1224,7 +1225,7 @@ def extract_closure(body, params, interp, env):
                 )
             # Special forms
             case Cons(Sym(None, '.'), Cons(obj, Cons(_, Nil()))):
-                # onlt the obj is evaluated, not the attr
+                # only the obj is evaluated, not the attr
                 return aux(obj, m, lets)
             case Cons(Sym(None, '.'), _):
                 raise SyntaxError(
@@ -1299,56 +1300,174 @@ def load_module(module_path, interp):
     return interp
 
 
+def cata(alg):
+    return (lambda expr: alg(fmap(cata(alg), unfix(expr))))
+
+
+def unfix(expr):
+    # Not sure what this should be, because we are not using types
+    return expr
+
+
+def fmap(f, expr):
+    "describes recursion into sub-expressions in our lisp grammar"
+    # we assume all macros have been expanded already...?
+    match expr:
+        case x if x is nil:
+            return nil
+        case None | True | False | int() | float() | str() | Keyword():
+            return expr
+        case Cons(Sym(None, 'ns' | 'require' | 'import'), _):
+            raise ValueError(f'not allowed within fn: {expr}')
+        case Cons(Sym(None, '.') as s, Cons(obj, Cons(attr, Nil()))):
+            # attr will always be a symbol
+            return Cons(s, Cons(f(obj), Cons(attr, nil)))
+        case Cons(Sym(None, 'def'), _):
+            raise ValueError(f'def is a statement not an expression: {expr}')
+
+        # I think we have to assume that the lhs in the bindings
+        # are symbols - ... so I think that means we only call f on the values
+        case Cons(Sym(None, 'let*' | 'loop') as s,
+                  Cons(Vec() as bindings, Cons(body, Nil() | None))):
+            def map_seconds(f, vec):
+                for binding, init in take_pairs(vec):
+                    yield binding
+                    yield f(init)
+            return Cons(s,
+                        Cons(Vec.from_iter(map_seconds(f, bindings)),
+                             Cons(f(body), nil)))
+        case Cons(Sym(None, 'recur') as s, args):
+            return Cons(s, List.from_iter(map(f, args)))
+        case Cons(Sym(None, 'if') as s,
+                  Cons(pred, Cons(consequent, Cons(alternative, Nil())))):
+
+            return Cons(s,
+                        Cons(f(pred),
+                             Cons(f(consequent),
+                                  Cons(f(alternative), nil))))
+        # TODO: fn
+        case Cons(Sym(None, 'raise') as s, Cons(r, Nil() | None)):
+            # Raise is also a statement?
+            return Cons(s, Cons(f(r), nil))
+        case Cons(Sym(None, 'quote'), Cons(_, Nil())):
+            return expr
+        case Cons(Sym(None, 'var'), Cons(Sym(), Nil() | None)):
+            return expr
+        case Cons() as lst:
+            return List.from_iter(map(f, lst))
+        case Sym() as sym:
+            return sym
+        case Vec() as vec:
+            return Vec.from_iter(map(f, vec))
+        case ArrayMap() as m:
+            return ArrayMap.from_iter((f(k), f(v)) for (k, v) in m.items())
+        case Map() as m:
+            return Map.from_iter((f(k), f(v)) for (k, v) in m.items())
+        case _:
+            raise NotImplementedError(expr)
+
+
 # This is in ultra-draft idea mode at the moment
-def compile_fn(name, params, body, interp, env):
+def compile_fn(fn: Fn, interp, *, mode='func'):
+    """
+    mode can be one of
+    * func -> returns a python function
+    * lines -> returns the lines of python that make up the body of the
+               function
+    """
     import keyword
 
     class Uncompilable(Exception):
         pass
 
-    closure = extract_closure(body, params, interp, env)
+    name = fn.name
+    body = fn.body
+    params = tuple(fn.params)
+    restparam = fn.restparam
+    closure = fn.env
+
+    def mangle_name(name):
+        if keyword.iskeyword(name):
+            return name + '__'
+        if not name.isidentifier():
+            raise NotImplementedError(name)
+        return name
 
     def create_fn(body_lines):
         # FIXME: we will almost definitely have to do some param name
         # conversion
-        args = ', '.join([sym.n for sym in params])
+        args = ', '.join(
+            [sym.n for sym in params] +
+            [f'*{sym.n}' for sym in filter(None, [restparam])]
+        )
         fn_body = '\n'.join([f'  {b}' for b in body_lines])
-        fn_name = name or f'fn_{hash((params, body, interp, env))}'
-        if keyword.iskeyword(fn_name):
-            fn_name = fn_name + '_'
+        fn_name = name or f'fn_{hash((params, restparam, body)) & ((1 << 63) - 1)}'
+        fn_name = mangle_name(fn_name)
+
         txt = f' def {fn_name}({args}):\n{fn_body}'
 
-        locals = {sym.n: v for (sym, v) in closure.items()}
+        locals = {mangle_name(sym.n): v for (sym, v) in closure.items()}
         local_vars = ', '.join(locals.keys())
         txt = f"def __create_fn__({local_vars}):\n{txt}\n return {fn_name}"
         ns = {}
         exec(txt, None, ns)
         return ns['__create_fn__'](**locals)
 
-    def compile_expr(expr, env):
+    # First stage should be to make all names unique, and put the values
+    # in a single map... maybe
+
+    # There will need to be a stage that converts expressions containing
+    # raise, into a statement sequence? or... define a raise_ func
+
+    def compile_expr_alg(expr):
+        """
+        assume all subexpressions have already been compiled and then embedded
+        into the structure of our AST
+        """
+
+        # TODO: think about whether rebuild keywords, symbols, vectors and map
+        # literals
+        # or to simply reference them, and stick them in the globals or locals
+
         match expr:
-            case Sym(None, 'false'):
+            case str(x) | int(x) | float(x):
+                return repr(x)
+            case Sym(None, 'false') | False:
                 return 'False'
-            case Sym(None, 'true'):
+            case Sym(None, 'true') | True:
                 return 'True'
-            case Sym(None, 'nil'):
+            case Sym(None, 'nil') | None:
                 return 'None'
             case Sym(None, n) as sym:
-                if sym in params or sym in closure:
-                    return n
+                # TODO: find let-bound vars
+                if sym == restparam:
+                    # FIXME: this needs to have had itself converted to a List
+                    return mangle_name(n)
+                if sym in params:
+                    return mangle_name(n)
+                if sym in closure:
+                    # Or... should this be doing a .value access when this
+                    # is referring to a Var?
+                    if isinstance(closure[sym], Var):
+                        return mangle_name(n) + '.value'
                 raise Uncompilable(f'unresolved: {n}')
             case Cons(Sym(None, 'if'),
                       Cons(predicate,
                            Cons(consequent, Cons(alternative, Nil())))):
-                c = compile_expr(consequent, env)
-                p = compile_expr(predicate, env)
-                a = compile_expr(alternative, env)
-                return f'({c}) if ({p}) else ({a})'
+                return f'({consequent}) if ({predicate}) else ({alternative})'
+            case Cons(Sym(None, '.'), Cons(obj, Cons(attr, Nil()))):
+                return f'{obj}.{attr}'
+            case Cons(proc_form, args):
+                # TODO: deal with Fns that take an interpreter
+                joined_args = ', '.join(args)
+                return f'({proc_form})({joined_args})'
             case _:
                 raise Uncompilable(expr)
 
     try:
-        body_lines = ['return ' + compile_expr(body, env)]
+        body_lines = ['return ' + cata(compile_expr_alg)(body)]
+        if mode == 'lines':
+            return body_lines
         return create_fn(body_lines)
     except Uncompilable:
         traceback.print_exc()
@@ -1477,16 +1596,22 @@ def eval_form(form, interp, env):
 
         case Cons(Sym(None, 'fn'), Cons(Vec() as params, Cons(body, Nil()))):
             closure = extract_closure(body, params, interp, env)
-            return Fn(None, params, body, closure), interp
-        case Cons(Sym(None, 'fn'),
-                  Cons(Sym(None, name), Cons(Vec() as params, Cons(body, Nil())))):
+            fn = Fn(None, params, body, closure)
             if interp.compilation_enabled:
-                compiled = compile_fn(name, params, body, interp, env)
+                compiled = compile_fn(fn, interp)
                 if compiled is not None:
                     return compiled, interp
+            return fn, interp
+        case Cons(Sym(None, 'fn'),
+                  Cons(Sym(None, name), Cons(Vec() as params, Cons(body, Nil())))):
             # TODO: create a var to store the name in?
             closure = extract_closure(body, params, interp, env)
-            return Fn(name, params, body, closure), interp
+            fn = Fn(name, params, body, closure)
+            if interp.compilation_enabled:
+                compiled = compile_fn(fn, interp)
+                if compiled is not None:
+                    return compiled, interp
+            return fn, interp
         case Cons(Sym(None, 'fn'), _):
             raise SyntaxError(f'invalid fn form: {form}', location_from(form))
 
