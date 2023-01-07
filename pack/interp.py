@@ -110,7 +110,7 @@ class Cons(List):
 
     def __post_init__(self):
         if self.tl is not None and self.tl is not nil:
-            assert isinstance(self.tl, Cons)
+            assert isinstance(self.tl, Cons), type(self.tl)
 
     def __iter__(self):
         cons = self
@@ -1300,13 +1300,10 @@ def load_module(module_path, interp):
     return interp
 
 
-def cata(alg):
-    return (lambda expr: alg(fmap(cata(alg), unfix(expr))))
-
-
-def unfix(expr):
-    # Not sure what this should be, because we are not using types
-    return expr
+def cata_f(fmap, unfix=lambda x: x):
+    def cata(alg):
+        return (lambda f: alg(fmap(cata(alg), unfix(f))))
+    return cata
 
 
 def fmap(f, expr):
@@ -1367,6 +1364,43 @@ def fmap(f, expr):
             raise NotImplementedError(expr)
 
 
+cata = cata_f(fmap)
+
+
+@dataclass(frozen=True, slots=True)
+class ConsF:
+    hd: Any
+    tl: Any  # A
+
+    @staticmethod
+    def unfix(lst):
+        match lst:
+            case Cons(hd, tl):
+                return ConsF(hd, tl)
+            case other:
+                return other
+
+
+def fmap_datum(f, datum):
+    match datum:
+        case x if x is nil:
+            return nil
+        case None | True | False | int() | float() | str() | Keyword():
+            return datum
+        case ConsF(hd, tl):
+            return ConsF(hd, f(tl))
+        case Sym() as sym:
+            return sym
+        case Vec() as vec:
+            return Vec.from_iter(map(f, vec))
+        case ArrayMap() as m:
+            return ArrayMap.from_iter((f(k), f(v)) for (k, v) in m.items())
+        case Map() as m:
+            return Map.from_iter((f(k), f(v)) for (k, v) in m.items())
+        case _:
+            raise NotImplementedError(datum)
+
+
 # This is in ultra-draft idea mode at the moment
 def compile_fn(fn: Fn, interp, *, mode='func'):
     """
@@ -1389,6 +1423,13 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
     def mangle_name(name):
         if keyword.iskeyword(name):
             return name + '__'
+
+        name = name.replace('.', '_DOT_')
+        name = name.replace('?', '_QUESTION_')
+        name = name.replace('+', '_PLUS_')
+        name = name.replace('-', '_MINUS_')
+        name = name.replace('*', '_STAR_')
+
         if not name.isidentifier():
             raise NotImplementedError(name)
         return name
@@ -1406,7 +1447,13 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
 
         txt = f' def {fn_name}({args}):\n{fn_body}'
 
-        locals = {mangle_name(sym.n): v for (sym, v) in closure.items()}
+        locals = {mangle_name(sym.n): v for (sym, v) in closure.items()} | {
+            '__List_from_iter': List.from_iter,
+            '__Cons': Cons,
+            '__Vec_from_iter': Vec.from_iter,
+            '__Sym': Sym,
+            '__Keyword': Keyword,
+        }
         local_vars = ', '.join(locals.keys())
         txt = f"def __create_fn__({local_vars}):\n{txt}\n return {fn_name}"
         ns = {}
@@ -1418,6 +1465,29 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
 
     # There will need to be a stage that converts expressions containing
     # raise, into a statement sequence? or... define a raise_ func
+
+    # Maybe better would be a step to remove quote, replacing it
+    # with calls to the list, vector and hash-map functions
+    def data_to_python_alg(datum):
+        match datum:
+            case Nil() | None:
+                return 'None'
+            case ConsF(hd, tl):
+                return f'__Cons({hd}, {tl})'
+            case Vec() as vec:
+                args = ', '.join(vec)
+                return f'__Vec_from_iter(({args}))'
+            case str() | int() | float() | bool():
+                return repr(datum)
+            case Sym(None, n):
+                return f'__Sym(None, {str(n)!r})'
+            case Sym(ns, n):
+                return f'__Sym({str(ns)!r}, {str(n)!r})'
+            case Keyword(None, n):
+                return f'__Keyword(None, {str(n)!r})'
+            case Keyword(ns, n):
+                return f'__Keyword({str(ns)!r}, {str(n)!r})'
+        raise NotImplementedError(datum)
 
     def compile_expr_alg(expr):
         """
@@ -1457,6 +1527,11 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
                 return f'({consequent}) if ({predicate}) else ({alternative})'
             case Cons(Sym(None, '.'), Cons(obj, Cons(attr, Nil()))):
                 return f'{obj}.{attr}'
+            case Cons(Sym(None, 'quote'), Cons(datum, Nil())):
+                code = cata_f(fmap_datum, ConsF.unfix)(data_to_python_alg)(datum)
+                if code is None:
+                    breakpoint()
+                return code
             case Cons(proc_form, args):
                 # TODO: deal with Fns that take an interpreter
                 joined_args = ', '.join(args)
@@ -1464,8 +1539,12 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
             case _:
                 raise Uncompilable(expr)
 
+    body_lines = []
     try:
-        body_lines = ['return ' + cata(compile_expr_alg)(body)]
+        if restparam is not None:
+            mn = mangle_name(restparam.n)
+            body_lines += [f'{mn} = __List_from_iter({mn})']
+        body_lines += ['return ' + cata(compile_expr_alg)(body)]
         if mode == 'lines':
             return body_lines
         return create_fn(body_lines)
