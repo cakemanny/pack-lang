@@ -810,9 +810,14 @@ def read_comment(text):
 
 
 def take_pairs(xs):
-    "yield pairs from an even length iterable: ABCDEF -> AB CD EF"
+    """yield pairs from an even length iterable: ABCDEF -> AB CD EF"""
     # See https://docs.python.org/3/library/functions.html#zip Tips and tricks
     return zip(it := iter(xs), it, strict=True)
+
+
+def untake_pairs(pairs):
+    "does the reverse of take_pairs. pairs should be an iterable of tuples"
+    return chain.from_iterable(pairs)
 
 
 def close_sequence(opener, elements):
@@ -1201,6 +1206,8 @@ def extract_closure(body, params, interp, env):
 
     def aux(expr, m, lets):
         match expr:
+            case str() | int() | float() | bool() | Nil() | None | Keyword():
+                return m
             case Sym(None, 'true' | 'false' | 'nil'):
                 return m
             # The arguments for if and raise are evaluated, so
@@ -1259,8 +1266,6 @@ def extract_closure(body, params, interp, env):
                     m = aux(k, m, lets)
                     m = aux(v, m, lets)
                 return m
-            case str() | int() | float() | bool() | Nil() | None:
-                return m
             case _:
                 raise NotImplementedError(expr)
 
@@ -1301,9 +1306,21 @@ def load_module(module_path, interp):
 
 
 def cata_f(fmap, unfix=lambda x: x):
+    """
+    generalised fold-right over any functor. takes the fmap for that functor
+    """
     def cata(alg):
         return (lambda f: alg(fmap(cata(alg), unfix(f))))
     return cata
+
+
+def compose(*fs):
+    "compose functions of a single argument. compose(f, g)(x) == f(g(x))"
+    def composed(x):
+        for f in reversed(fs):
+            x = f(x)
+        return x
+    return composed
 
 
 def fmap(f, expr):
@@ -1389,6 +1406,8 @@ def fmap_datum(f, datum):
             return datum
         case ConsF(hd, tl):
             return ConsF(hd, f(tl))
+        case Cons() as lst:
+            return List.from_iter(map(f, iter(lst)))
         case Sym() as sym:
             return sym
         case Vec() as vec:
@@ -1399,6 +1418,29 @@ def fmap_datum(f, datum):
             return Map.from_iter((f(k), f(v)) for (k, v) in m.items())
         case _:
             raise NotImplementedError(datum)
+
+
+def remove_quote_alg(datum):
+    """
+    remove complex quoted datum by replacing literals with their
+    constructors. quoted symbols remain.
+    '(a 1 [b 2 {c 3 :d 4}]) -> (list 'a 1 (vector 'b 2 (hash-map 'c 3 :d 4)))
+    """
+    match datum:
+        case Sym() as sym:
+            return Cons(Sym(None, 'quote'), Cons(sym, nil))
+        case Cons() | Nil() as lst:
+            return Cons(Sym('pack.core', 'list'), List.from_iter(lst))
+        case Vec() as vec:
+            return Cons(Sym('pack.core', 'vector'), List.from_iter(vec))
+        case ArrayMap() | Map() as m:
+            return Cons(Sym('pack.core', 'hash-map'),
+                        List.from_iter(untake_pairs(m.items())))
+        case other:
+            return other
+
+
+remove_quote = cata_f(fmap_datum)(remove_quote_alg)
 
 
 # This is in ultra-draft idea mode at the moment
@@ -1438,8 +1480,8 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         # FIXME: we will almost definitely have to do some param name
         # conversion
         args = ', '.join(
-            [sym.n for sym in params] +
-            [f'*{sym.n}' for sym in filter(None, [restparam])]
+            [sym.n for sym in params]
+            + [f'*{sym.n}' for sym in filter(None, [restparam])]
         )
         fn_body = '\n'.join([f'  {b}' for b in body_lines])
         fn_name = name or f'fn_{hash((params, restparam, body)) & ((1 << 63) - 1)}'
@@ -1466,28 +1508,23 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
     # There will need to be a stage that converts expressions containing
     # raise, into a statement sequence? or... define a raise_ func
 
-    # Maybe better would be a step to remove quote, replacing it
-    # with calls to the list, vector and hash-map functions
-    def data_to_python_alg(datum):
-        match datum:
-            case Nil() | None:
-                return 'None'
-            case ConsF(hd, tl):
-                return f'__Cons({hd}, {tl})'
-            case Vec() as vec:
-                args = ', '.join(vec)
-                return f'__Vec_from_iter(({args}))'
-            case str() | int() | float() | bool():
-                return repr(datum)
-            case Sym(None, n):
-                return f'__Sym(None, {str(n)!r})'
-            case Sym(ns, n):
-                return f'__Sym({str(ns)!r}, {str(n)!r})'
-            case Keyword(None, n):
-                return f'__Keyword(None, {str(n)!r})'
-            case Keyword(ns, n):
-                return f'__Keyword({str(ns)!r}, {str(n)!r})'
-        raise NotImplementedError(datum)
+    def remove_true_false_and_nil_alg(expr):
+        match expr:
+            case Sym(None, 'false'):
+                return False
+            case Sym(None, 'true'):
+                return True
+            case Sym(None, 'nil'):
+                return None
+            case _:
+                return expr
+
+    def remove_complex_quote_alg(expr):
+        match expr:
+            case Cons(Sym(None, 'quote'), Cons(datum, Nil())):
+                return remove_quote(datum)
+            case _:
+                return expr
 
     def compile_expr_alg(expr):
         """
@@ -1500,14 +1537,14 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         # or to simply reference them, and stick them in the globals or locals
 
         match expr:
-            case str(x) | int(x) | float(x):
-                return repr(x)
-            case Sym(None, 'false') | False:
-                return 'False'
-            case Sym(None, 'true') | True:
-                return 'True'
-            case Sym(None, 'nil') | None:
-                return 'None'
+            case str() | int() | float() | bool() | None as lit:
+                return repr(lit)
+            case Keyword(None, n):
+                # because of the FileString instances, we have to convert to
+                # normal strings
+                return f'__Keyword(None, {str(n)!r})'
+            case Keyword(ns, n):
+                return f'__Keyword({str(ns)!r}, {str(n)!r})'
             case Sym(None, n) as sym:
                 # TODO: find let-bound vars
                 if sym == restparam:
@@ -1527,11 +1564,12 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
                 return f'({consequent}) if ({predicate}) else ({alternative})'
             case Cons(Sym(None, '.'), Cons(obj, Cons(attr, Nil()))):
                 return f'{obj}.{attr}'
-            case Cons(Sym(None, 'quote'), Cons(datum, Nil())):
-                code = cata_f(fmap_datum, ConsF.unfix)(data_to_python_alg)(datum)
-                if code is None:
-                    breakpoint()
-                return code
+
+            case Cons(Sym(None, 'quote'), Cons(Sym(None, n), Nil())):
+                return f'__Sym(None, {str(n)!r})'
+            case Cons(Sym(None, 'quote'), Cons(Sym(ns, n), Nil())):
+                return f'__Sym({str(ns)!r}, {str(n)!r})'
+
             case Cons(proc_form, args):
                 # TODO: deal with Fns that take an interpreter
                 joined_args = ', '.join(args)
@@ -1539,12 +1577,18 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
             case _:
                 raise Uncompilable(expr)
 
+    prog1 = cata(compose(
+        remove_complex_quote_alg,
+        remove_true_false_and_nil_alg,
+    ))(body)
+    after_transforms = prog1
+
     body_lines = []
     try:
         if restparam is not None:
             mn = mangle_name(restparam.n)
             body_lines += [f'{mn} = __List_from_iter({mn})']
-        body_lines += ['return ' + cata(compile_expr_alg)(body)]
+        body_lines += ['return ' + cata(compile_expr_alg)(after_transforms)]
         if mode == 'lines':
             return body_lines
         return create_fn(body_lines)
@@ -1893,7 +1937,7 @@ def expanding_quasi_quote(form, interp):
                         Cons(Sym('pack.core', 'vector'),
                              Cons(expanding_quasi_quote(elems, interp), nil)))
         case ArrayMap() | Map() as m:
-            elems = List.from_iter(chain(*m.items()))
+            elems = List.from_iter(untake_pairs(m.items()))
             return Cons(Sym('pack.core', 'apply'),
                         Cons(Sym('pack.core', 'hash-map'),
                              Cons(expanding_quasi_quote(elems, interp), nil)))

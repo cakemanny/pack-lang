@@ -1126,6 +1126,7 @@ def test_compiler__1(initial_interpreter):
     ('(fn f [] "a string")', ["return 'a string'"]),
     ('(fn f [] 5)', ["return 5"]),
     ('(fn f [] 5.9)', ["return 5.9"]),
+    ('(fn f [] :a-key)', ["return __Keyword(None, 'a-key')"]),
     ('(fn f [] ((. "hi" islower)))', ["return ('hi'.islower)()"]),
     ('(fn f [] ((. "hi" index) "i"))', ["return ('hi'.index)('i')"]),
 ])
@@ -1168,3 +1169,56 @@ def test_compiler__references(initial_interpreter):
     fn = results[-1]
     lines = compile_fn(fn, interp, mode='lines')
     assert lines == ['return (None) if ((not__.value)(lst)) else (lst.tl)']
+
+
+def test_compiler__remove_quote():
+    from pack.interp import remove_quote
+
+    text = """\
+    '(a b c)
+    """
+    form = read_all_forms(text)[0].tl.hd
+    assert remove_quote(form) == read_all_forms("(pack.core/list 'a 'b 'c)")[0]
+
+    text = """\
+    '(a 1 [b 2 {c 3 :d 4}])
+    """
+    form = read_all_forms(text)[0].tl.hd
+    # There are two possibilities due to the "random" iteration order of
+    # hash-maps
+    assert remove_quote(form) == read_all_forms("""\
+    (pack.core/list 'a 1 (pack.core/vector 'b 2 (pack.core/hash-map 'c 3 :d 4)))
+    """)[0] or remove_quote(form) == read_all_forms("""\
+    (pack.core/list 'a 1 (pack.core/vector 'b 2 (pack.core/hash-map :d 4 'c 3)))
+    """)[0]
+
+    text = """\
+    '()
+    """
+    form = read_all_forms(text)[0].tl.hd
+    assert remove_quote(form) == read_all_forms("(pack.core/list)")[0]
+
+
+@pytest.mark.parametrize('fn_txt,expected_lines', [
+    ('(fn f [x] (quote [1 a :d]))',
+     ["return vector(1, __Sym(None, 'a'), __Keyword(None, 'd'))"]),
+])
+def test_compiler__quoted_data(
+        fn_txt, expected_lines, initial_interpreter
+):
+    from pack.interp import compile_fn
+
+    text = f"""\
+    (ns user)
+    (require 'pack.core)
+    {fn_txt}
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+    assert results[-1] == Any(Fn)
+
+    fn = results[-1]
+    lines = compile_fn(fn, interp, mode='lines')
+
+    assert lines == expected_lines
