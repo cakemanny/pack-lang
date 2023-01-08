@@ -1,11 +1,12 @@
 import dataclasses
 import importlib
+import operator
 import os
 import sys
 import traceback
 from collections.abc import Sequence, Mapping, Set
 from dataclasses import dataclass
-from functools import reduce, partial
+from functools import reduce
 from itertools import chain, islice
 from typing import Any, Optional, Collection, Iterable, Iterator
 
@@ -1230,6 +1231,11 @@ def extract_closure(body, params, interp, env):
                     f'Could not resolve symbol: {sym!r} in this context',
                     location_from(sym)
                 )
+            case Sym(ns, name) if ns is not None:
+                # Can be resolved during evaluation ...
+                # TODO: think about whether it might be better to
+                # always resolve now and include in the closure...
+                return m
             # Special forms
             case Cons(Sym(None, '.'), Cons(obj, Cons(_, Nil()))):
                 # only the obj is evaluated, not the attr
@@ -1305,6 +1311,11 @@ def load_module(module_path, interp):
     return interp
 
 
+# --------------
+# Compiler start
+# --------------
+
+
 def cata_f(fmap, unfix=lambda x: x):
     """
     generalised fold-right over any functor. takes the fmap for that functor
@@ -1359,7 +1370,11 @@ def fmap(f, expr):
                         Cons(f(pred),
                              Cons(f(consequent),
                                   Cons(f(alternative), nil))))
-        # TODO: fn
+        case Cons(Sym(None, 'fn') as s, Cons(Vec() as params, Cons(body, Nil()))):
+            return Cons(s, Cons(params, Cons(f(body), nil)))
+        case Cons(Sym(None, 'fn') as s,
+                  Cons(Sym(None, _) as n, Cons(Vec() as params, Cons(body, Nil())))):
+            return Cons(s, Cons(n, Cons(params, Cons(f(body), nil))))
         case Cons(Sym(None, 'raise') as s, Cons(r, Nil() | None)):
             # Raise is also a statement?
             return Cons(s, Cons(f(r), nil))
@@ -1381,21 +1396,48 @@ def fmap(f, expr):
             raise NotImplementedError(expr)
 
 
+def reduce_expr(zero, plus, expr):
+    "reduce when a is a monoid in f a -> a"
+    match expr:
+        case x if x is nil:
+            return zero
+        case None | True | False | int() | float() | str() | Keyword():
+            return zero
+
+        case Cons(Sym(None, '.'), Cons(obj, Cons(_, Nil()))):
+            return obj
+        case Cons(Sym(None, 'let*' | 'loop'),
+                  Cons(Vec() as bindings, Cons(body, Nil() | None))):
+            every_second = islice(bindings, 1, None, 2)
+            return plus(reduce(plus, every_second, zero), body)
+        case Cons(Sym(None, 'recur'), args):
+            return reduce(plus, args, zero)
+        case Cons(Sym(None, 'if'),
+                  Cons(pred, Cons(consequent, Cons(alternative, Nil())))):
+            return plus(plus(pred, consequent), alternative)
+        case Cons(Sym(None, 'fn'), Cons(Vec(), Cons(body, Nil()))):
+            return body
+        case Cons(Sym(None, 'fn'), Cons(Sym(None, _), Cons(Vec(), Cons(body, Nil())))):
+            return body
+        case Cons(Sym(None, 'raise'), Cons(r, Nil() | None)):
+            return r
+        case Cons(Sym(None, 'quote'), Cons(_, Nil())):
+            return zero
+        case Cons(Sym(None, 'var'), Cons(Sym(), Nil() | None)):
+            return zero
+        case Cons() as lst:
+            return reduce(plus, iter(lst), zero)
+        case Sym():
+            return zero
+        case Vec() as vec:
+            return reduce(plus, vec, zero)
+        case Map() | ArrayMap() as m:
+            return reduce(plus, untake_pairs(m.items()), zero)
+        case _:
+            raise NotImplementedError(expr)
+
+
 cata = cata_f(fmap)
-
-
-@dataclass(frozen=True, slots=True)
-class ConsF:
-    hd: Any
-    tl: Any  # A
-
-    @staticmethod
-    def unfix(lst):
-        match lst:
-            case Cons(hd, tl):
-                return ConsF(hd, tl)
-            case other:
-                return other
 
 
 def fmap_datum(f, datum):
@@ -1404,10 +1446,8 @@ def fmap_datum(f, datum):
             return nil
         case None | True | False | int() | float() | str() | Keyword():
             return datum
-        case ConsF(hd, tl):
-            return ConsF(hd, f(tl))
         case Cons() as lst:
-            return List.from_iter(map(f, iter(lst)))
+            return List.from_iter(map(f, lst))
         case Sym() as sym:
             return sym
         case Vec() as vec:
@@ -1418,6 +1458,18 @@ def fmap_datum(f, datum):
             return Map.from_iter((f(k), f(v)) for (k, v) in m.items())
         case _:
             raise NotImplementedError(datum)
+
+
+def remove_vec_and_map_alg(expr):
+    "replace map and vector literals with their constructors"
+    match expr:
+        case Vec() as vec:
+            return Cons(Sym('pack.core', 'vector'), List.from_iter(vec))
+        case ArrayMap() | Map() as m:
+            return Cons(Sym('pack.core', 'hash-map'),
+                        List.from_iter(untake_pairs(m.items())))
+        case other:
+            return other
 
 
 def remove_quote_alg(datum):
@@ -1431,16 +1483,11 @@ def remove_quote_alg(datum):
             return Cons(Sym(None, 'quote'), Cons(sym, nil))
         case Cons() | Nil() as lst:
             return Cons(Sym('pack.core', 'list'), List.from_iter(lst))
-        case Vec() as vec:
-            return Cons(Sym('pack.core', 'vector'), List.from_iter(vec))
-        case ArrayMap() | Map() as m:
-            return Cons(Sym('pack.core', 'hash-map'),
-                        List.from_iter(untake_pairs(m.items())))
         case other:
             return other
 
 
-remove_quote = cata_f(fmap_datum)(remove_quote_alg)
+remove_quote = cata_f(fmap_datum)(compose(remove_vec_and_map_alg, remove_quote_alg))
 
 
 # This is in ultra-draft idea mode at the moment
@@ -1471,12 +1518,16 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         name = name.replace('+', '_PLUS_')
         name = name.replace('-', '_MINUS_')
         name = name.replace('*', '_STAR_')
+        name = name.replace('/', '_SLASH_')
 
         if not name.isidentifier():
             raise NotImplementedError(name)
         return name
 
-    def create_fn(body_lines):
+    def raise__(e: BaseException):
+        raise e
+
+    def create_fn(body_lines, resolved_qualifieds):
         # FIXME: we will almost definitely have to do some param name
         # conversion
         args = ', '.join(
@@ -1484,22 +1535,25 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
             + [f'*{sym.n}' for sym in filter(None, [restparam])]
         )
         fn_body = '\n'.join([f'  {b}' for b in body_lines])
-        fn_name = name or f'fn_{hash((params, restparam, body)) & ((1 << 63) - 1)}'
-        fn_name = mangle_name(fn_name)
+        fn_name = mangle_name(
+            name or f'fn_{hash((params, restparam, body)) & ((1 << 63) - 1)}'
+        )
 
         txt = f' def {fn_name}({args}):\n{fn_body}'
 
         locals = {mangle_name(sym.n): v for (sym, v) in closure.items()} | {
             '__List_from_iter': List.from_iter,
-            '__Cons': Cons,
-            '__Vec_from_iter': Vec.from_iter,
             '__Sym': Sym,
             '__Keyword': Keyword,
+            'raise__': raise__
         }
         local_vars = ', '.join(locals.keys())
         txt = f"def __create_fn__({local_vars}):\n{txt}\n return {fn_name}"
+        globals = {
+            mangle_name(str(var.symbol)): var for var in resolved_qualifieds
+        }
         ns = {}
-        exec(txt, None, ns)
+        exec(txt, globals, ns)
         return ns['__create_fn__'](**locals)
 
     # First stage should be to make all names unique, and put the values
@@ -1532,10 +1586,6 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         into the structure of our AST
         """
 
-        # TODO: think about whether rebuild keywords, symbols, vectors and map
-        # literals
-        # or to simply reference them, and stick them in the globals or locals
-
         match expr:
             case str() | int() | float() | bool() | None as lit:
                 return repr(lit)
@@ -1548,7 +1598,6 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
             case Sym(None, n) as sym:
                 # TODO: find let-bound vars
                 if sym == restparam:
-                    # FIXME: this needs to have had itself converted to a List
                     return mangle_name(n)
                 if sym in params:
                     return mangle_name(n)
@@ -1558,12 +1607,16 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
                     if isinstance(closure[sym], Var):
                         return mangle_name(n) + '.value'
                 raise Uncompilable(f'unresolved: {n}')
+            case Sym() as sym:
+                return mangle_name(str(sym)) + '.value'
             case Cons(Sym(None, 'if'),
                       Cons(predicate,
                            Cons(consequent, Cons(alternative, Nil())))):
                 return f'({consequent}) if ({predicate}) else ({alternative})'
             case Cons(Sym(None, '.'), Cons(obj, Cons(attr, Nil()))):
-                return f'{obj}.{attr}'
+                return f'({obj}).{attr}'
+            case Cons(Sym(None, 'raise'), Cons(raisable, Nil())):
+                return f'raise__({raisable})'
 
             case Cons(Sym(None, 'quote'), Cons(Sym(None, n), Nil())):
                 return f'__Sym(None, {str(n)!r})'
@@ -1578,10 +1631,24 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
                 raise Uncompilable(expr)
 
     prog1 = cata(compose(
+        remove_vec_and_map_alg,
         remove_complex_quote_alg,
         remove_true_false_and_nil_alg,
     ))(body)
     after_transforms = prog1
+
+    def used_qualifieds_alg(expr):
+        match expr:
+            case Sym(ns, _) as sym if ns is not None:
+                return (sym,)
+            case other:
+                return reduce_expr(zero=(), plus=operator.add, expr=other)
+
+    used_qualifieds = cata(used_qualifieds_alg)(after_transforms)
+
+    resolved_qualifieds = [
+        interp.resolve_symbol(sym, ArrayMap.empty()) for sym in used_qualifieds
+    ]
 
     body_lines = []
     try:
@@ -1591,10 +1658,16 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         body_lines += ['return ' + cata(compile_expr_alg)(after_transforms)]
         if mode == 'lines':
             return body_lines
-        return create_fn(body_lines)
+        return create_fn(body_lines, resolved_qualifieds)
     except Uncompilable:
         traceback.print_exc()
         return None
+
+
+# ------------------------
+# Compiler End
+# AKA: Interpreter Resumed
+# ------------------------
 
 
 def eval_form(form, interp, env):
@@ -1923,14 +1996,15 @@ def expanding_quasi_quote(form, interp):
         case Nil():
             return nil
         case Cons() as lst:
-            def f(form):
+            def splice(form):
                 match form:
                     case Cons(Sym(None, 'unquote-splicing'), Cons(x, Nil())):
                         return x
-                return Cons(Sym('pack.core', 'list'),
-                            Cons(expanding_quasi_quote(form, interp), nil))
+                    case _:
+                        return Cons(Sym('pack.core', 'list'),
+                                    Cons(expanding_quasi_quote(form, interp), nil))
             return Cons(Sym('pack.core', 'concat'),
-                        List.from_iter(map(f, lst)))
+                        List.from_iter(map(splice, lst)))
         case Vec() as vec:
             elems = List.from_iter(vec)
             return Cons(Sym('pack.core', 'apply'),
@@ -1946,20 +2020,13 @@ def expanding_quasi_quote(form, interp):
 
 
 def expand_quasi_quotes(form, interp):
-    recur = partial(expand_quasi_quotes, interp=interp)
-    match form:
-        case Cons(Sym(None, 'quasiquote'), Cons(quoted_form, Nil())):
-            return expanding_quasi_quote(recur(quoted_form), interp)
-        case Cons() as lst:
-            return List.from_iter(map(recur, lst))
-        case Vec() as vec:
-            return Vec.from_iter(map(recur, vec))
-        case ArrayMap() as m:
-            return ArrayMap.from_iter((recur(k), recur(v)) for (k, v) in m.items())
-        case Map() as m:
-            return Map.from_iter((recur(k), recur(v)) for (k, v) in m.items())
-        case other:
-            return other
+    def alg(form):
+        match form:
+            case Cons(Sym(None, 'quasiquote'), Cons(expanded_subform, Nil())):
+                return expanding_quasi_quote(expanded_subform, interp)
+            case other:
+                return other
+    return cata_f(fmap_datum)(alg)(form)
 
 
 def expand_and_evaluate_forms(forms, interp):

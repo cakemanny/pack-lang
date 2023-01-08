@@ -3,6 +3,8 @@
 (import operator)
 (import pack.interp)
 
+(def *compile* false)
+
 (def eval (. pack.interp rt_eval))
 (def apply (. pack.interp rt_apply))
 
@@ -53,13 +55,5 @@
     (let* [rev-plus (fn [xs ys] (+ ys xs))
            rev (. builtins reversed)]
      (rev (foldl rev-plus '() elems)))))
-
-;(def concat
-;  (fn concat [& elems]
-;    (if elems
-;      (if (rest elems)
-;        (+ (first elems) (apply concat (rest elems)))
-;        (first elems))
-;      nil)))
 
 ;; vim:ft=clojure:

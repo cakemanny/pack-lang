@@ -1122,13 +1122,13 @@ def test_compiler__1(initial_interpreter):
 
 
 @pytest.mark.parametrize('fn_txt,expected_lines', [
-    ('(fn f [x] (. x name))', ['return x.name']),
+    ('(fn f [x] (. x name))', ['return (x).name']),
     ('(fn f [] "a string")', ["return 'a string'"]),
     ('(fn f [] 5)', ["return 5"]),
     ('(fn f [] 5.9)', ["return 5.9"]),
     ('(fn f [] :a-key)', ["return __Keyword(None, 'a-key')"]),
-    ('(fn f [] ((. "hi" islower)))', ["return ('hi'.islower)()"]),
-    ('(fn f [] ((. "hi" index) "i"))', ["return ('hi'.index)('i')"]),
+    ('(fn f [] ((. "hi" islower)))', ["return (('hi').islower)()"]),
+    ('(fn f [] ((. "hi" index) "i"))', ["return (('hi').index)('i')"]),
 ])
 def test_compiler__simple_expressions(
         fn_txt, expected_lines, initial_interpreter
@@ -1168,7 +1168,29 @@ def test_compiler__references(initial_interpreter):
 
     fn = results[-1]
     lines = compile_fn(fn, interp, mode='lines')
-    assert lines == ['return (None) if ((not__.value)(lst)) else (lst.tl)']
+    assert lines == ['return (None) if ((not__.value)(lst)) else ((lst).tl)']
+
+
+def test_compiler__qualified_references(initial_interpreter):
+    from pack.interp import compile_fn
+
+    text = """\
+    (ns pack.core)
+    (def *compile* false)
+    (def not (fn not [x] (if x false true)))
+    ; refer to not
+    (fn rest [lst] (if (pack.core/not lst) nil (. lst tl)))
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+    assert results[-1] == Any(Fn)
+
+    fn = results[-1]
+    lines = compile_fn(fn, interp, mode='lines')
+    assert lines == [
+        'return (None) if ((pack_DOT_core_SLASH_not.value)(lst)) else ((lst).tl)'
+    ]
 
 
 def test_compiler__remove_quote():
@@ -1201,7 +1223,10 @@ def test_compiler__remove_quote():
 
 @pytest.mark.parametrize('fn_txt,expected_lines', [
     ('(fn f [x] (quote [1 a :d]))',
-     ["return vector(1, __Sym(None, 'a'), __Keyword(None, 'd'))"]),
+     ["return (pack_DOT_core_SLASH_vector.value)(1, __Sym(None, 'a'), __Keyword(None, 'd'))"]),  # noqa
+
+    ('(fn f [x] [1 2])',
+     ["return (pack_DOT_core_SLASH_vector.value)(1, 2)"]),
 ])
 def test_compiler__quoted_data(
         fn_txt, expected_lines, initial_interpreter
