@@ -470,7 +470,7 @@ def test_expand_and_evaluate__ns_error(initial_interpreter):
     with pytest.raises(SemanticError) as exc_info:
         expand_and_evaluate_forms(forms, initial_interpreter)
 
-    assert "ns expects a symbol" in str(exc_info.value)
+    assert "must be a simple symbol" in str(exc_info.value)
 
 
 def test_expand_and_evaluate__syntax(initial_interpreter):
@@ -570,7 +570,7 @@ def test_expand_and_evaluate__resolve_error(initial_interpreter):
     with pytest.raises(EvalError) as exc_info:
         expand_and_evaluate_forms(forms, initial_interpreter)
 
-    assert "not resolve symbol: does-not-exist-yet" in str(exc_info.value)
+    assert "does-not-exist-yet not found" in str(exc_info.value)
     assert exc_info.value.location == ("fake.pack", 2, 0)
 
     text = textwrap.dedent("""\
@@ -653,7 +653,7 @@ def test_expand_and_evaluate__4(initial_interpreter):
     {(not false) 1 (not (not false)) 0}
     [1 2 3 (not 3)]
     (ns user)
-    (not false)
+    (pack.core/not false)
     """
     forms = read_all_forms(text)
 
@@ -871,6 +871,7 @@ def test_expand_and_evaluate__import_nested_fn(initial_interpreter):
     (def str (fn str [arg] ((. builtins str) arg)))
 
     (ns user)
+    (pack.core/refer 'pack.core)
     (str 'example)
     (def f (fn [x] (fn [y] (str y x))))
     """
@@ -881,8 +882,9 @@ def test_expand_and_evaluate__import_nested_fn(initial_interpreter):
     import builtins
     assert results == [
         None,
-        Var(Sym(None, 'builtins'), builtins),
+        Var(Sym('py', 'builtins'), builtins),
         Var(Sym('pack.core', 'str'), Any(Fn)),
+        None,
         None,
         "example",
         Var(Sym('user', 'f'), Any(Fn)),
@@ -890,7 +892,7 @@ def test_expand_and_evaluate__import_nested_fn(initial_interpreter):
     assert results[2].value.env == ArrayMap.empty().assoc(
         Sym(None, 'builtins'), Any(Var)
     )
-    assert results[5].value.env == ArrayMap.empty().assoc(
+    assert results[6].value.env == ArrayMap.empty().assoc(
         Sym(None, 'str'), Any(Var)
     )
 
@@ -922,8 +924,33 @@ def test_expand_and_evaluate__raise(initial_interpreter):
     forms = read_all_forms(text)
 
     with pytest.raises(Exception) as exc_info:
-        results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+        expand_and_evaluate_forms(forms, initial_interpreter)
     assert 'hurray' in str(exc_info.value)
+
+
+def test_expand_and_evaluate__do(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (ns user)
+    (import builtins)
+    (do
+        ((. builtins print) "I'm debugging")
+        (def x 5)
+        ((. builtins print) "x =" x))
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'user'
+    import builtins
+    assert results == [
+        None,
+        None,
+        Var(Sym('py', 'builtins'), builtins),
+        None
+    ]
 
 
 def test_expand_and_evaluate__raise__error(initial_interpreter):
@@ -1029,6 +1056,7 @@ def test_defmacro(initial_interpreter):
                 (. xs tl))))
 
     (ns user)
+    (pack.core/refer 'pack.core)
 
     (def ->
         (fn
@@ -1052,14 +1080,13 @@ def test_defmacro(initial_interpreter):
     assert results[-2:] == [None, 14]
 
 
-@pytest.mark.skip
 def test_expand_and_evaluate__refer(initial_interpreter):
     text = """\
     (ns pack.core)
     (ns example)
     (def xxx 5)
     (ns user)
-    (refer 'example)
+    (pack.core/refer 'example)
     xxx
     (var xxx)
     """
@@ -1067,9 +1094,9 @@ def test_expand_and_evaluate__refer(initial_interpreter):
 
     results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
 
-    assert results[-2] == [
+    assert results[-2:] == [
         5,
-        Var(Sym('example', 'xxx'), Any(Fn))
+        Var(Sym('example', 'xxx'), 5)
     ]
 
 
@@ -1158,6 +1185,8 @@ def test_compiler__references(initial_interpreter):
     (ns pack.core)
     (def *compile* false)
     (def not (fn not [x] (if x false true)))
+    (ns user)
+    (pack.core/refer 'pack.core)
     ; refer to not
     (fn rest [lst] (if (not lst) nil (. lst tl)))
     """

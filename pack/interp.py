@@ -1005,24 +1005,32 @@ class RecurError(PackLangError):
 class Namespace:
     name: str
     defs: Map | ArrayMap = ArrayMap.empty()  # str -> var
-    aliases: Map | ArrayMap = ArrayMap.empty()  # str -> var
 
     def apply_defs(self, f):
         return dataclasses.replace(self, defs=f(self.defs))
-
-    def apply_aliases(self, f):
-        return dataclasses.replace(self, aliases=f(self.aliases))
 
 
 def initial_pack_core():
     # Creates pack.core with some magic interpreter variables
     # This is not the full contents of pack.core. See pack/core.pack
-    return Namespace(
+
+    def initial_ns_macro(interp, ns_sym):
+        return Cons(Sym('pack.core', 'in-ns'),
+                    Cons(Cons(Sym(None, 'quote'), Cons(ns_sym, nil)), nil)), interp
+
+    ns = Namespace(
         'pack.core',
         defs=ArrayMap.empty()
         .assoc('*ns*', Var(Sym('pack.core', '*ns*')))
         .assoc('*compile*', Var(Sym('pack.core', '*compile*'), False))
+        .assoc('refer', Var(Sym('pack.core', 'refer'), rt_refer))
+        .assoc('in-ns', Var(Sym('pack.core', 'in-ns'), rt_in_ns))
+        .assoc('ns', Var(Sym('pack.core', 'ns'),
+                         RTFn(initial_ns_macro),
+                         metadata=ArrayMap.empty().assoc(KW_MACRO, True)))
     )
+    ns.defs['*ns*'].value = ns
+    return ns
 
 
 @dataclass(frozen=True)
@@ -1036,16 +1044,15 @@ class Interpreter:
     def switch_namespace(self, name: str):
         assert isinstance(name, str)
         if name not in self.namespaces:
-            ns = Namespace(name)
+            ns = Namespace(name,
+                           defs=ArrayMap.empty()
+                           # always make sure we are able to switch
+                           # namespace
+                           .assoc('ns', self.namespaces['pack.core'].defs['ns']))
         else:
             ns = self.namespaces[name]
 
         namespaces = self.namespaces.assoc(name, ns)
-        if '*ns*' not in namespaces['pack.core'].defs:
-            core = namespaces['pack.core'].apply_defs(
-                lambda defs: defs.assoc('*ns*', Var(Sym('pack.core', '*ns*')))
-            )
-            namespaces = namespaces.assoc('pack.core', core)
 
         # Mutation!
         namespaces['pack.core'].defs['*ns*'].value = ns
@@ -1060,18 +1067,12 @@ class Interpreter:
         return dataclasses.replace(self, namespaces=namespaces)
 
     @property
-    def default_ns(self):
-        return self.namespaces['pack.core']
-
-    @property
     def current_ns(self):
         return self.namespaces['pack.core'].defs['*ns*'].value
 
     def resolve_symbol(self, sym, env):
         if sym in env:
-            if isinstance(env[sym], Var):
-                return env[sym]
-            raise SemanticError('{sym} is not a var', location_from(sym))
+            return env[sym]
         ns_name = sym.ns or self.current_ns.name
         try:
             ns = self.namespaces[ns_name]
@@ -1088,7 +1089,7 @@ class Interpreter:
 
     @property
     def compilation_enabled(self):
-        return self.default_ns.defs['*compile*'].value
+        return self.namespaces['pack.core'].defs['*compile*'].value
 
 
 @dataclass
@@ -1191,9 +1192,40 @@ def _rt_eval(interp, form):
     return result, interp
 
 
+def _rt_refer(interp, namespace_name):
+    if not isinstance(namespace_name, Sym) or namespace_name.ns is not None:
+        raise SemanticError(
+            f'module must be a simple symbol (no /): invalid: {namespace_name}'
+        )
+    name = namespace_name.n
+
+    def update_defs(defs):
+        for key, var in interp.namespaces[name].defs.items():
+            if var.symbol.ns == name:
+                if key not in interp.current_ns.defs:
+                    defs = defs.assoc(key, var)
+        return defs
+
+    return None, interp.update_ns(
+        interp.current_ns.name,
+        lambda ns: ns.apply_defs(update_defs)
+    )
+
+
+def _rt_in_ns(interp, namespace_name):
+    if not isinstance(namespace_name, Sym) or namespace_name.ns is not None:
+        raise SemanticError(
+            f'namespace must be a simple symbol (no /): invalid: {namespace_name}'
+        )
+    name = namespace_name.n
+    return None, interp.switch_namespace(name)
+
+
 rt_apply = RTFn(_rt_apply)
 rt_eval = RTFn(_rt_eval)
 """eval - as to be imported and used from lisp programs. evaluates a single form"""
+rt_refer = RTFn(_rt_refer)
+rt_in_ns = RTFn(_rt_in_ns)
 
 
 def extract_closure(body, params, interp, env):
@@ -1213,7 +1245,7 @@ def extract_closure(body, params, interp, env):
                 return m
             # The arguments for if and raise are evaluated, so
             # can just be treated like functions here
-            case Sym(None, 'if' | 'raise' | 'var' | 'recur'):
+            case Sym(None, 'if' | 'raise' | 'var' | 'recur' | 'do'):
                 return m
             case Sym(None, name) as sym:
                 # Maybe this is also the point to do more macro expanding?
@@ -1223,10 +1255,6 @@ def extract_closure(body, params, interp, env):
                     return m.assoc(sym, env[sym])
                 if name in interp.current_ns.defs:
                     return m.assoc(sym, interp.current_ns.defs[name])
-                if name in interp.current_ns.aliases:
-                    return m.assoc(sym, interp.current_ns.aliases[name])
-                if name in interp.default_ns.defs:
-                    return m.assoc(sym, interp.default_ns.defs[name])
                 raise EvalError(
                     f'Could not resolve symbol: {sym!r} in this context',
                     location_from(sym)
@@ -1342,11 +1370,13 @@ def fmap(f, expr):
             return nil
         case None | True | False | int() | float() | str() | Keyword():
             return expr
-        case Cons(Sym(None, 'ns' | 'require' | 'import'), _):
+        case Cons(Sym(None, 'require' | 'import'), _):
             raise ValueError(f'not allowed within fn: {expr}')
         case Cons(Sym(None, '.') as s, Cons(obj, Cons(attr, Nil()))):
             # attr will always be a symbol
             return Cons(s, Cons(f(obj), Cons(attr, nil)))
+        case Cons(Sym(None, 'do') as s, args):
+            return Cons(s, List.from_iter(map(f, args)))
         case Cons(Sym(None, 'def'), _):
             raise ValueError(f'def is a statement not an expression: {expr}')
 
@@ -1406,6 +1436,8 @@ def reduce_expr(zero, plus, expr):
 
         case Cons(Sym(None, '.'), Cons(obj, Cons(_, Nil()))):
             return obj
+        case Cons(Sym(None, 'do'), args):
+            return reduce(plus, args, zero)
         case Cons(Sym(None, 'let*' | 'loop'),
                   Cons(Vec() as bindings, Cons(body, Nil() | None))):
             every_second = islice(bindings, 1, None, 2)
@@ -1676,11 +1708,6 @@ def eval_form(form, interp, env):
             return nil, interp
         case None | True | False | int() | float() | str() | Keyword():
             return form, interp
-        # TODO: change this to in-ns
-        case Cons(Sym(None, 'ns'), Cons(Sym(None, name), _)):
-            return None, interp.switch_namespace(name)
-        case Cons(Sym(None, 'ns'), _):
-            raise SemanticError('ns expects a symbol as argument')
 
         case Cons(Sym(None, 'require'), Cons(name_form, _)):
             name, interp = eval_form(name_form, interp, env)
@@ -1695,28 +1722,40 @@ def eval_form(form, interp, env):
             return None, interp
 
         case Cons(Sym(None, 'import'), Cons(Sym(None, name) as sym, _)):
+            # TODO: check that the name is not already used for something else
             module = importlib.import_module(name)
 
-            ns_name = interp.current_ns.name
-            if name in interp.namespaces[ns_name].aliases:
-                var = interp.namespaces[ns_name].aliases[name]
-                # !Mutation!
-                var.value = module
-            else:
-                var = Var(sym, module)
-                interp = interp.update_ns(
-                    ns_name,
-                    lambda ns: ns.apply_aliases(
-                        lambda aliases: aliases.assoc(name, var)
-                    )
-                )
-            return var, interp
+            saved_namespace_name = interp.current_ns.name
+            interp = interp.switch_namespace('py')
+            _, interp = expand_and_evaluate_forms([
+                Cons(Sym(None, 'def'), Cons(sym, nil))
+            ], interp)
 
+            var = interp.resolve_symbol(Sym("py", name), env)
+            var.value = module
+
+            interp = interp.switch_namespace(saved_namespace_name)
+
+            if interp.current_ns.defs.get(name):
+                # Don't overwrite current mapping
+                return var, interp
+
+            return var, interp.update_ns(
+                interp.current_ns.name,
+                lambda ns: ns.apply_defs(
+                    lambda defs: defs.assoc(name, var)
+                )
+            )
         case Cons(Sym(None, '.'), Cons(obj_expr, Cons(Sym(None, attr), Nil()))):
             obj, interp = eval_form(obj_expr, interp, env)
             return getattr(obj, attr), interp
         case Cons(Sym(None, '.'), _):
             raise SyntaxError(f'invald member expression: {form}', location_from(form))
+
+        case Cons(Sym(None, 'do'), exprs):
+            for expr in exprs:
+                result, interp = eval_form(expr, interp, env)
+            return result, interp
 
         case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Cons(init, Nil()))):
             init_val, interp = eval_form(init, interp, env)
@@ -1839,7 +1878,7 @@ def eval_form(form, interp, env):
             # TODO: maybe this is the point we should be calling macroexpand...
             proc, interp = eval_form(sym, interp, env)
             assert isinstance(proc, IFn)
-            expanded_form, interp = proc(interp, *list(args))
+            expanded_form, interp = proc(interp, *tuple(args))
             return eval_form(expanded_form, interp, env)
         case Cons(proc_form, args):
             proc, interp = eval_form(proc_form, interp, env)
@@ -1866,6 +1905,11 @@ def eval_form(form, interp, env):
             return None, interp
 
         case Sym(None, name) as sym:
+            resolved = interp.resolve_symbol(sym, env)
+            if isinstance(resolved, Var):
+                return resolved.value, interp
+            return resolved, interp
+
             if sym in env:
                 if isinstance(env[sym], Var):
                     return env[sym].value, interp
@@ -1875,11 +1919,6 @@ def eval_form(form, interp, env):
             # but called in another
             if name in interp.current_ns.defs:
                 return interp.current_ns.defs[name].value, interp
-            if name in interp.current_ns.aliases:
-                return interp.current_ns.aliases[name].value, interp
-            # TODO: put stuff from pack.core into aliases
-            if name in interp.default_ns.defs:
-                return interp.default_ns.defs[name].value, interp
             raise EvalError(
                 f'Could not resolve symbol: {sym} in this context',
                 location_from(sym)
@@ -1952,6 +1991,14 @@ def macroexpand_1(form, interp):
         case Cons(Sym(None, 'def'), _):
             raise SemanticError('def expects a symbol as argument')
 
+        case Cons(Sym(None, 'do') as s, stmts):
+            # defs are also allowed inside 'do' s
+            new_forms = []
+            for subform in stmts:
+                new_form, interp = macroexpand_1(subform, interp)
+                new_forms.append(new_form)
+            return Cons(s, List.from_iter(new_forms)), interp
+
         # TODO: check if definition is macro
         # case ...
         case other:
@@ -1974,10 +2021,10 @@ def expanding_quasi_quote(form, interp):
     match form:
         case Sym(None, 'true' | 'false' | 'nil'):
             return form
-        case Sym(None, 'ns' | 'require' | 'import'):
+        case Sym(None, 'require' | 'import'):
             return quote_form(form)
         case Sym(None, '.' | 'def' | 'let*' | 'if' | 'fn' | 'raise' | 'quote'
-                 | 'var' | 'recur' | 'loop'):
+                 | 'var' | 'recur' | 'loop' | 'do'):
             return quote_form(form)
         case Sym(None, name) as sym:
             try:
