@@ -570,7 +570,7 @@ def test_expand_and_evaluate__resolve_error(initial_interpreter):
     with pytest.raises(EvalError) as exc_info:
         expand_and_evaluate_forms(forms, initial_interpreter)
 
-    assert "does-not-exist-yet not found" in str(exc_info.value)
+    assert "does-not-exist-yet" in str(exc_info.value)
     assert exc_info.value.location == ("fake.pack", 2, 0)
 
     text = textwrap.dedent("""\
@@ -582,7 +582,7 @@ def test_expand_and_evaluate__resolve_error(initial_interpreter):
     with pytest.raises(EvalError) as exc_info:
         expand_and_evaluate_forms(forms, initial_interpreter)
 
-    assert "no such namespace: no-such-ns" in str(exc_info.value)
+    assert "no-such-ns" in str(exc_info.value)
     assert exc_info.value.location == ("fake.pack", 2, 0)
 
 
@@ -1080,6 +1080,63 @@ def test_defmacro(initial_interpreter):
     assert results[-2:] == [None, 14]
 
 
+def test_macro_expansion(initial_interpreter):
+    text = """\
+    (require 'pack.core)
+    (ns user)
+    (import pack.interp)
+
+    (def m1 (fn m1 [arg-form] (str arg-form)))
+    ((. pack.interp set_macro) (var m1))
+
+    (def m2 (fn m2 [arg-form] (str "m2-" arg-form)))
+    ((. pack.interp set_macro) (var m2))
+
+    ; m2 shall not be expanded because m1 converts it to a string
+    (m1 (m2 hey))
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'user'
+
+    assert results[-1:] == [
+        "(m2 hey)"
+    ]
+
+
+def test_macro_expansion__repeated(initial_interpreter):
+    text = """\
+    (require 'pack.core)
+    (ns user)
+    (import pack.interp)
+
+    (def m1 (fn m1 [arg-form] `(m2 ~arg-form)))
+    ((. pack.interp set_macro) (var m1))
+
+    (def m2 (fn m2 [arg-form] (str "m2-" arg-form)))
+    ((. pack.interp set_macro) (var m2))
+
+    (def m3 (fn m3 [arg-form] (str "m3-" arg-form)))
+    ((. pack.interp set_macro) (var m3))
+
+    ; m3 shall not be expanded because m2 converts m3 to a string
+    (m1 (m3 hey))
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'user'
+
+    assert results[-1:] == [
+        "m2-(m3 hey)"
+    ]
+
+
 def test_expand_and_evaluate__refer(initial_interpreter):
     text = """\
     (ns pack.core)
@@ -1276,3 +1333,28 @@ def test_compiler__quoted_data(
     lines = compile_fn(fn, interp, mode='lines')
 
     assert lines == expected_lines
+
+
+def test_ana():
+    from pack.interp import ana, take_pairs, Nil
+
+    def build_sth(expr):
+        match expr:
+            case Cons(Sym(None, 'let*') as s,
+                      Cons(Vec() as bindings, Cons(body, Nil()))):
+                result = body
+                for k, v in reversed(tuple(take_pairs(bindings))):
+                    result = Cons(s, Cons(Vec.from_iter([k, v]), Cons(result, nil)))
+                return result
+            case other:
+                return other
+
+    form = read_all_forms("""\
+    (do
+        (let* [x 5 y 9] (* x y)))
+    """)[0]
+
+    assert ana(build_sth)(form) == read_all_forms("""
+    (do
+        (let* [x 5] (let* [y 9] (* x y))))
+    """)[0]

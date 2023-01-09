@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from functools import reduce
 from itertools import chain, islice
 from typing import Any, Optional, Collection, Iterable, Iterator
+from typing import Generic, TypeVar
 
 
 # ----------------
@@ -1084,7 +1085,7 @@ class Interpreter:
             return ns.defs[sym.n]
         except KeyError:
             raise EvalError(
-                f'{sym!r} not found in this context', location_from(sym)
+                f'could not resolve name in this context: {sym!r}', location_from(sym)
             ) from None
 
     @property
@@ -1116,9 +1117,9 @@ def set_macro(var):
     var.metadata = var.metadata.assoc(KW_MACRO, True)
 
 
-def is_macro(sym, interp, env):
+def is_macro(sym, interp):
     try:
-        var = interp.resolve_symbol(sym, env)
+        var = interp.resolve_symbol(sym, ArrayMap.empty())
     except PackLangError:
         return False
     try:
@@ -1343,14 +1344,85 @@ def load_module(module_path, interp):
 # Compiler start
 # --------------
 
+L = TypeVar('L')
+R = TypeVar('R')
+
+
+@dataclass(frozen=True)
+class Left(Generic[L, R]):
+    l: L
+
+
+@dataclass(frozen=True)
+class Right(Generic[L, R]):
+    r: R
+
+
+def fan_in(b_to_d, c_to_d):
+    """
+    (|||) ::: (b -> d) -> (c -> d) -> Either b c -> d
+    (|||) = either
+    """
+    def aux(either_b_or_c):
+        match either_b_or_c:
+            case Left(b):
+                return b_to_d(b)
+            case Right(c):
+                return c_to_d(c)
+    return aux
+
 
 def cata_f(fmap, unfix=lambda x: x):
     """
     generalised fold-right over any functor. takes the fmap for that functor
+
+    cata alg = alg . fmap (cata alg) . unfix
     """
     def cata(alg):
-        return (lambda f: alg(fmap(cata(alg), unfix(f))))
+        return lambda f: alg(fmap(cata(alg), unfix(f)))
     return cata
+
+
+def ana_f(fmap, fix=lambda x: x):
+    """
+    generalised unfold.
+    we can use it for top down traverals
+
+    ana :: Functor f => (a -> f a) -> a -> Fix f
+    ana coalg = Fix . fmap (ana coalg) . coalg
+    """
+    def ana(coalg):
+        return lambda a: fix(fmap(ana(coalg), coalg(a)))
+    return ana
+
+
+def hylo_f(fmap):
+    """
+    unfold and then fold
+
+    hylo :: Functor f => (f b -> b) -> (a -> f a) -> a -> b
+    hylo g h = cata g . ana h
+    <=>
+    hylo f g = f . fmap (hylo f g) . g
+    """
+    # we implement the second, fused version, which is more space-efficient
+    def hylo(alg, coalg):
+        return lambda a: alg(fmap(hylo(alg, coalg), coalg(a)))
+    return hylo
+
+
+def apo_f(fmap, fix=lambda x: x):
+    """
+    shortcutting anamorphism
+
+    apo :: Fixpoint f t => (a -> f (Either a t)) -> a -> t
+    apo coa = inF . fmap (apo coa ||| id) . coa
+    """
+    identity = lambda x: x
+
+    def apo(coa):
+        return lambda a: fix(fmap(fan_in(apo(coa), identity), coa(a)))
+    return apo
 
 
 def compose(*fs):
@@ -1426,6 +1498,10 @@ def fmap(f, expr):
             raise NotImplementedError(expr)
 
 
+cata = cata_f(fmap)
+ana = ana_f(fmap)
+
+
 def reduce_expr(zero, plus, expr):
     "reduce when a is a monoid in f a -> a"
     match expr:
@@ -1467,9 +1543,6 @@ def reduce_expr(zero, plus, expr):
             return reduce(plus, untake_pairs(m.items()), zero)
         case _:
             raise NotImplementedError(expr)
-
-
-cata = cata_f(fmap)
 
 
 def fmap_datum(f, datum):
@@ -1757,9 +1830,11 @@ def eval_form(form, interp, env):
                 result, interp = eval_form(expr, interp, env)
             return result, interp
 
+        case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Nil())) as form:
+            return eval_form(form + Cons(None, nil), interp, env)
         case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Cons(init, Nil()))):
             init_val, interp = eval_form(init, interp, env)
-            var = interp.namespaces[ns_name].defs[name]
+            var = interp.namespaces[ns_name or interp.current_ns.name].defs[name]
             # !Mutation!
             var.value = init_val
             return var, interp
@@ -1874,12 +1949,6 @@ def eval_form(form, interp, env):
                 f'invalid special form var: var takes 1 symbol as argument: {form}'
             )
 
-        case Cons(Sym() as sym, args) if is_macro(sym, interp, env):
-            # TODO: maybe this is the point we should be calling macroexpand...
-            proc, interp = eval_form(sym, interp, env)
-            assert isinstance(proc, IFn)
-            expanded_form, interp = proc(interp, *tuple(args))
-            return eval_form(expanded_form, interp, env)
         case Cons(proc_form, args):
             proc, interp = eval_form(proc_form, interp, env)
 
@@ -1909,20 +1978,6 @@ def eval_form(form, interp, env):
             if isinstance(resolved, Var):
                 return resolved.value, interp
             return resolved, interp
-
-            if sym in env:
-                if isinstance(env[sym], Var):
-                    return env[sym].value, interp
-                return env[sym], interp
-
-            # This is actually broken for fns defined in one module
-            # but called in another
-            if name in interp.current_ns.defs:
-                return interp.current_ns.defs[name].value, interp
-            raise EvalError(
-                f'Could not resolve symbol: {sym} in this context',
-                location_from(sym)
-            )
         case Sym(ns_name, name) as sym:
             var = interp.resolve_symbol(sym, env)
             if isinstance(var, Var):
@@ -1954,20 +2009,17 @@ def eval_form(form, interp, env):
     raise NotImplementedError(form)
 
 
-# Currently this is doing too much!
-# identifying definitions should be done in a step before expanding
-# and then form simplifying should come later
-def macroexpand_1(form, interp):
+def create_defs(form, interp):
+    # Notice that only defs at the top level are found
     match form:
-
-        case Cons(Sym(None, 'def') as deff, Cons(Sym(_, _) as sym, Nil())):
-            return Cons(deff, Cons(sym, Cons(None, nil))), interp
-        case Cons(Sym(None, 'def'), Cons(Sym(None, name), Cons(init, _))):
-            # Should make a note of whether this is a macro or not
-
-            ns = interp.current_ns.name
-            return Cons(Sym(None, 'def'), Cons(Sym(ns, name), Cons(init, nil))), interp
-        case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name) as sym, Cons(init, Nil()))):
+        case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), (
+            # (def xxx init) | (def blah/xxx init)
+            Cons(_, Nil())
+            # (def xxx) | (def blah/xxx)
+            | Nil()
+        ))):
+            if ns_name is None:
+                ns_name = interp.current_ns.name
             try:
                 ns = interp.namespaces[ns_name]
             except KeyError:
@@ -1977,7 +2029,7 @@ def macroexpand_1(form, interp):
                     'Cannot def symbol outside current ns'
                 )
 
-            if name in interp.namespaces[ns_name].defs:
+            if name in ns.defs:
                 # TODO: Should this error if the name refers to an alias
                 # already?
                 return form, interp
@@ -1985,7 +2037,7 @@ def macroexpand_1(form, interp):
             return form, interp.update_ns(
                 ns_name,
                 lambda ns: ns.apply_defs(
-                    lambda defs: defs.assoc(name, Var(sym))
+                    lambda defs: defs.assoc(name, Var(Sym(ns_name, name)))
                 )
             )
         case Cons(Sym(None, 'def'), _):
@@ -1995,22 +2047,77 @@ def macroexpand_1(form, interp):
             # defs are also allowed inside 'do' s
             new_forms = []
             for subform in stmts:
-                new_form, interp = macroexpand_1(subform, interp)
+                new_form, interp = create_defs(subform, interp)
                 new_forms.append(new_form)
             return Cons(s, List.from_iter(new_forms)), interp
 
-        # TODO: check if definition is macro
-        # case ...
         case other:
             return other, interp
 
 
-def macroexpand(form, interp):
+def macroexpand_1(form, interp):
+    # We use ana (anamorphism) for a top-down expansion
+    # ... actually we use apo (apomorphism), because ana doesn't
+    # work if the macro expands directly to another macro call
+
+    # This is no longer used, but it's a nice example of using apo
+
+    def coalgebra(form):
+        nonlocal interp
+        # I think we may find that generating symbols won't
+        # work unless we thread the interpreter through as well...
+        match form:
+            case Cons(Sym() as sym, args) if is_macro(sym, interp):
+                proc, interp = eval_form(sym, interp, ArrayMap.empty())
+                if isinstance(proc, IFn):
+                    expanded_form, interp = proc(interp, *tuple(args))
+                else:
+                    expanded_form = proc(*tuple(args))
+                return fmap_datum(Right, expanded_form)
+            case other:
+                return fmap_datum(Left, other)
+
+    return apo_f(fmap_datum)(coalgebra)(form), interp
+
+
+def macroexpand_old(form, interp):
     while True:
         new_form, interp = macroexpand_1(form, interp)
         if new_form == form:
             return new_form, interp
         form = new_form
+
+
+def macroexpand(form, interp):
+    # expand all macros in a single pass
+
+    # The coalgebra embeds the expanded form in a marked form
+    # in order that the next iteration ana on the subform finds it
+    # and further expands any macros found in the expansion
+
+    def coalgebra(form):
+        nonlocal interp
+        # I think we may find that generating symbols won't
+        # work unless we thread the interpreter through as well...
+        match form:
+            case Cons(Sym() as sym, args) if is_macro(sym, interp):
+                proc, interp = eval_form(sym, interp, ArrayMap.empty())
+                if isinstance(proc, IFn):
+                    expanded_form, interp = proc(interp, *tuple(args))
+                else:
+                    expanded_form = proc(*tuple(args))
+                return Cons(Sym(None, '_MARKER_'), Cons(expanded_form, nil))
+            case other:
+                return other
+
+    def algebra(form):
+        match form:
+            case Cons(Sym(None, '_MARKER_'), Cons(expanded_form, Nil())):
+                return expanded_form
+            case other:
+                return other
+
+    return hylo_f(fmap_datum)(algebra, coalgebra)(form), interp
 
 
 # Roughly following
@@ -2082,7 +2189,8 @@ def expand_and_evaluate_forms(forms, interp):
     for form in forms:
         form0 = expand_quasi_quotes(form, interp)
         expanded, interp = macroexpand(form0, interp)
-        result, interp = eval_form(expanded, interp, Map.empty())
+        defined, interp = create_defs(expanded, interp)
+        result, interp = eval_form(defined, interp, Map.empty())
         results.append(result)
     return results, interp
 

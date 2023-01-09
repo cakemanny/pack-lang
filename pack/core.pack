@@ -24,6 +24,8 @@
 ;; Data structures
 (def list (fn [& elems] elems))
 (def list? (fn [xs] ((. builtins isinstance) xs (. pack.interp List))))
+(def cons (. pack.interp Cons))
+
 (def vector (fn [& elems] ((. (. pack.interp Vec) from_iter) elems)))
 (def hash-map
   (fn [& elems]
@@ -39,13 +41,19 @@
 
 (def first (fn [xs] (. xs hd)))
 (def rest (fn [xs] (. xs tl)))
-(def null? (fn [lst] (if lst false true)))
 
 (def foldl
   (fn [func accum lst]
-    (if (null? lst)
+    (if (not lst)
       accum
       (recur func (func accum (first lst)) (rest lst)))))
+
+; This will stack overflow quite quickly
+(def foldr
+  (fn foldr [func end lst]
+    (if (not lst)
+      end
+      (func (first lst) (foldr func end (rest lst))))))
 
 ;; concat
 ; foldl with + would be very inefficient due to + being linear in the
@@ -59,6 +67,22 @@
     (let* [rev-plus (fn [xs ys] (+ ys xs))
            rev (. builtins reversed)]
      (rev (foldl rev-plus '() elems)))))
+
+;;
+;; Now, from this point on, we have enough machinery to use syntax-quote
+;;
+
+(def map
+  (fn map [f xs]
+    (let* [fcons
+           (fn [x ys]
+             (cons (f x) ys))]
+      (foldr fcons '() xs))))
+
+;; this could be more efficient by converting parts to be a lazy seq
+(def str
+  (fn str [& parts]
+    (foldl + "" (map (. builtins str) parts))))
 
 
 ;; Namespace functions
