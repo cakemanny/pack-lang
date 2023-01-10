@@ -615,13 +615,18 @@ class Special:
     "A simple namespace for some constants that we use"
 
     DOT = Sym(None, '.')
+    DO = Sym(None, 'do')
     DEF = Sym(None, 'def')
     LETSTAR = Sym(None, 'let*')
+    LOOP = Sym(None, 'loop')
+    RECUR = Sym(None, 'recur')
     IF = Sym(None, 'if')
     FN = Sym(None, 'fn')
     RAISE = Sym(None, 'raise')
     QUOTE = Sym(None, 'quote')
     VAR = Sym(None, 'var')
+
+    all = {DOT, DO, DEF, LETSTAR, LOOP, RECUR, IF, FN, RAISE, QUOTE, VAR}
 
 
 # -------------
@@ -1015,9 +1020,9 @@ def initial_pack_core():
     # Creates pack.core with some magic interpreter variables
     # This is not the full contents of pack.core. See pack/core.pack
 
-    def initial_ns_macro(interp, ns_sym):
+    def initial_ns_macro(ns_sym):
         return Cons(Sym('pack.core', 'in-ns'),
-                    Cons(Cons(Sym(None, 'quote'), Cons(ns_sym, nil)), nil)), interp
+                    Cons(Cons(Sym(None, 'quote'), Cons(ns_sym, nil)), nil))
 
     ns = Namespace(
         'pack.core',
@@ -1027,7 +1032,7 @@ def initial_pack_core():
         .assoc('refer', Var(Sym('pack.core', 'refer'), rt_refer))
         .assoc('in-ns', Var(Sym('pack.core', 'in-ns'), rt_in_ns))
         .assoc('ns', Var(Sym('pack.core', 'ns'),
-                         RTFn(initial_ns_macro),
+                         initial_ns_macro,
                          metadata=ArrayMap.empty().assoc(KW_MACRO, True)))
     )
     ns.defs['*ns*'].value = ns
@@ -1128,22 +1133,14 @@ def is_macro(sym, interp):
         return False
 
 
-class IFn:
-    """
-    An function that potentially affects interpreter state.
-    All lisp functions adhere to this.
-    """
-    def __call__(self, interp, *args) -> (Any, Interpreter):
-        raise NotImplementedError
-
-
-class Fn(IFn):
-    def __init__(self, name, params, body, env):
+class Fn:
+    def __init__(self, name, params, body, env, interp):
         assert isinstance(params, Vec)
         self.name = name
         self.params, self.restparam = self._split_params(params)
         self.body = body
         self.env = env
+        self.interp = interp
 
     def _split_params(self, params: Vec):
         if Sym(None, '&') not in params:
@@ -1153,7 +1150,7 @@ class Fn(IFn):
         restparam = params[idx + 1]
         return new_params, restparam
 
-    def __call__(self, interp, *args):
+    def __call__(self, *args):
         if not self.restparam and len(args) != len(self.params):
             raise EvalError('incorrect number of arguments', location_from(args))
         env = self.env
@@ -1162,14 +1159,16 @@ class Fn(IFn):
         if self.restparam:
             restargs = args[len(self.params):]
             env = env.assoc(self.restparam, List.from_iter(restargs))
-        return eval_form(self.body, interp, env)
+        return eval_expr(self.body, self.interp, env)
 
     def __repr__(self):
         return f'<Fn({self.name}) object at {hex(id(self))}>'
 
 
-class RTFn(IFn):
-    "For creating IFn instances that are able to affect the interpreter"
+class RTFn:
+    """
+    An function that potentially affects interpreter state.
+    """
     def __init__(self, func):
         self.func = func
 
@@ -1182,10 +1181,18 @@ class RTFn(IFn):
         return f'<RTFn({self.func}) object at {hex(id(self))}>'
 
 
-def _rt_apply(interp, f, args):
-    if isinstance(f, IFn):
-        return f(interp, *args)
-    return f(*args), interp
+def is_interpreter_fn(sym, interp):
+    try:
+        var = interp.resolve_symbol(sym, ArrayMap.empty())
+    except PackLangError:
+        return False
+    return isinstance(var.value, RTFn)
+
+
+def rt_apply(f, args):
+    if isinstance(f, RTFn):
+        raise TypeError('apply was given a function that can alter the interpreter')
+    return f(*args)
 
 
 def _rt_eval(interp, form):
@@ -1222,7 +1229,6 @@ def _rt_in_ns(interp, namespace_name):
     return None, interp.switch_namespace(name)
 
 
-rt_apply = RTFn(_rt_apply)
 rt_eval = RTFn(_rt_eval)
 """eval - as to be imported and used from lisp programs. evaluates a single form"""
 rt_refer = RTFn(_rt_refer)
@@ -1234,9 +1240,10 @@ def extract_closure(body, params, interp, env):
     # captured as they are or not... I think the right answer is to
     # do so...
     # TODO
-    m = ArrayMap.empty()  # closure
+    m = ArrayMap.empty()  # closure. i.e. the result
+
     # TODO: combine params and lets into bound_vars and use a Set for this
-    lets = ArrayMap.empty()
+    lets = ArrayMap.from_iter([(p, p) for p in params])
 
     def aux(expr, m, lets):
         match expr:
@@ -1244,13 +1251,9 @@ def extract_closure(body, params, interp, env):
                 return m
             case Sym(None, 'true' | 'false' | 'nil'):
                 return m
-            # The arguments for if and raise are evaluated, so
-            # can just be treated like functions here
-            case Sym(None, 'if' | 'raise' | 'var' | 'recur' | 'do'):
-                return m
             case Sym(None, name) as sym:
                 # Maybe this is also the point to do more macro expanding?
-                if sym in params or sym in lets:
+                if sym in lets:
                     return m
                 if sym in env:
                     return m.assoc(sym, env[sym])
@@ -1280,20 +1283,27 @@ def extract_closure(body, params, interp, env):
                       Cons(Vec() as bindings, Cons(body, Nil()))):
                 for binding, init in take_pairs(bindings):
                     m = aux(init, m, lets)
-                    lets = lets.assoc(binding, None)
+                    lets = lets.assoc(binding, binding)
                 return aux(body, m, lets)
             case Cons(Sym(None, 'fn'),
                       Cons(Sym(), Cons(Vec() as fn_params, Cons(body, Nil())))) \
                     | Cons(Sym(None, 'fn'),
                            Cons(Vec() as fn_params, Cons(body, Nil()))):
-                lets = reduce(lambda xs, p: xs.assoc(p, None), fn_params, lets)
+                lets = reduce(lambda xs, p: xs.assoc(p, p), fn_params, lets)
+                return aux(body, m, lets)
+            case Cons(Sym(None, 'fn'),
+                      Cons(Sym(), Cons(Vec() as fn_params, Cons(body, Nil())))) \
+                    | Cons(Sym(None, 'fn'),
+                           Cons(Vec() as fn_params, Cons(body, Nil()))):
+                lets = reduce(lambda xs, p: xs.assoc(p, p), fn_params, lets)
                 return aux(body, m, lets)
             case Cons(Sym(None, 'quote'), _):
                 return m
-
-            case Cons(hd, tl):
-                m = aux(hd, m, lets)
-                return aux(tl, m, lets)
+            case Cons(Sym(None, 'if' | 'raise' | 'var' | 'recur' | 'do'), args):
+                return reduce(lambda m, sub_form: aux(sub_form, m, lets), args, m)
+            case Cons(hd, _) as lst:
+                assert hd not in Special.all
+                return reduce(lambda m, sub_form: aux(sub_form, m, lets), lst, m)
             case Vec() as vec:
                 return reduce(lambda m, sub_form: aux(sub_form, m, lets), vec, m)
             case ArrayMap() | Map() as m:
@@ -1503,7 +1513,13 @@ ana = ana_f(fmap)
 
 
 def reduce_expr(zero, plus, expr):
-    "reduce when a is a monoid in f a -> a"
+    """
+    reduce when a is a monoid in f a -> a
+
+    e.g. (if a b c) -> a + b + c
+         (let* [a b] c) -> a + c
+         ...
+    """
     match expr:
         case x if x is nil:
             return zero
@@ -1775,15 +1791,20 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
 # ------------------------
 
 
-def eval_form(form, interp, env):
-    match form:
-        case x if x is nil:
-            return nil, interp
-        case None | True | False | int() | float() | str() | Keyword():
-            return form, interp
+def eval_top_level_form(form, interp):
+    """
+    Top Level Forms are the only kind of forms that mutate the interpreter
+    i.e. make changes to namespaces
 
+    - def
+    - do
+    - import
+    - require
+    - refer
+    """
+    match form:
         case Cons(Sym(None, 'require'), Cons(name_form, _)):
-            name, interp = eval_form(name_form, interp, env)
+            name = eval_expr(name_form, interp, ArrayMap.empty())
             if name.ns is not None:
                 raise SemanticError(
                     f'module must be a simple name (no /): invalid: {name}'
@@ -1804,7 +1825,7 @@ def eval_form(form, interp, env):
                 Cons(Sym(None, 'def'), Cons(sym, nil))
             ], interp)
 
-            var = interp.resolve_symbol(Sym("py", name), env)
+            var = interp.resolve_symbol(Sym("py", name), ArrayMap.empty())
             var.value = module
 
             interp = interp.switch_namespace(saved_namespace_name)
@@ -1819,25 +1840,59 @@ def eval_form(form, interp, env):
                     lambda defs: defs.assoc(name, var)
                 )
             )
+
+        case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Nil())) as form:
+            return eval_top_level_form(form + Cons(None, nil), interp)
+        case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Cons(init, Nil()))):
+            init_val = eval_expr(init, interp, ArrayMap.empty())
+            var = interp.namespaces[ns_name or interp.current_ns.name].defs[name]
+            # !Mutation!
+            var.value = init_val
+            return var, interp
+
+        # Top Level do can contain other top level stuff, so that
+        # macros are able to expand to multiple side-effects
+        case Cons(Sym(None, 'do'), exprs):
+            for expr in exprs:
+                result, interp = eval_top_level_form(expr, interp)
+            return result, interp
+
+        case Cons(Sym() as sym, args) if is_interpreter_fn(sym, interp):
+            proc = eval_expr(sym, interp, ArrayMap.empty())
+            assert isinstance(proc, RTFn)
+
+            arg_vals = [
+                eval_expr(arg, interp, ArrayMap.empty()) for arg in args
+            ]
+            return proc(interp, *arg_vals)
+
+        case other:
+            return eval_expr(other, interp, ArrayMap.empty()), interp
+
+
+def eval_expr(form, interp, env):
+    match form:
+        case x if x is nil:
+            return nil
+        case None | True | False | int() | float() | str() | Keyword():
+            return form
+
         case Cons(Sym(None, '.'), Cons(obj_expr, Cons(Sym(None, attr), Nil()))):
-            obj, interp = eval_form(obj_expr, interp, env)
-            return getattr(obj, attr), interp
+            obj = eval_expr(obj_expr, interp, env)
+            return getattr(obj, attr)
         case Cons(Sym(None, '.'), _):
             raise SyntaxError(f'invald member expression: {form}', location_from(form))
 
         case Cons(Sym(None, 'do'), exprs):
             for expr in exprs:
-                result, interp = eval_form(expr, interp, env)
-            return result, interp
+                result = eval_expr(expr, interp, env)
+            return result
 
-        case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Nil())) as form:
-            return eval_form(form + Cons(None, nil), interp, env)
-        case Cons(Sym(None, 'def'), Cons(Sym(ns_name, name), Cons(init, Nil()))):
-            init_val, interp = eval_form(init, interp, env)
-            var = interp.namespaces[ns_name or interp.current_ns.name].defs[name]
-            # !Mutation!
-            var.value = init_val
-            return var, interp
+        case Cons(Sym(None, 'def'), _):
+            raise SyntaxError(
+                'def may only appear at top level or in top level do',
+                location_from(form)
+            )
 
         case Cons(Sym(None, 'let*'), Cons(Vec() as bindings, Cons(body, Nil() | None))):
             if len(bindings) % 2 != 0:
@@ -1851,9 +1906,9 @@ def eval_form(form, interp, env):
                         f'let* does not support destructuring: problem: {binding}',
                         location_from(binding)
                     )
-                init_val, interp = eval_form(init, interp, env)
+                init_val = eval_expr(init, interp, env)
                 env = env.assoc(binding, init_val)
-            return eval_form(body, interp, env)
+            return eval_expr(body, interp, env)
         case Cons(Sym(None, 'let*'), _):
             raise SyntaxError(f"invalid let: {form}", location_from(form))
 
@@ -1869,11 +1924,11 @@ def eval_form(form, interp, env):
                         f'loop does not support destructuring: problem: {binding}',
                         location_from(binding)
                     )
-                init_val, interp = eval_form(init, interp, env)
+                init_val = eval_expr(init, interp, env)
                 env = env.assoc(binding, init_val)
             while True:
                 try:
-                    return eval_form(body, interp, env)
+                    return eval_expr(body, interp, env)
                 except RecurError as e:
                     for (binding, _), val in zip(take_pairs(bindings), e.arg_vals):
                         env = env.assoc(binding, val)
@@ -1881,24 +1936,23 @@ def eval_form(form, interp, env):
             raise SyntaxError(f"invalid loop: {form}", location_from(form))
 
         case Cons(Sym(None, 'recur'), args):
-            arg_vals = []
-            for arg in args:
-                arg_val, interp = eval_form(arg, interp, env)
-                arg_vals.append(arg_val)
+            arg_vals = [
+                eval_expr(arg, interp, env) for arg in args
+            ]
             raise RecurError(form, arg_vals)
 
         case Cons(Sym(None, 'if'),
                   Cons(predicate,
                        Cons(consequent, Cons(alternative, Nil())))):
-            p, interp = eval_form(predicate, interp, env)
+            p = eval_expr(predicate, interp, env)
             if p:
-                return eval_form(consequent, interp, env)
-            return eval_form(alternative, interp, env)
+                return eval_expr(consequent, interp, env)
+            return eval_expr(alternative, interp, env)
         case Cons(Sym(None, 'if'), Cons(predicate, Cons(consequent, Nil()))):
-            p, interp = eval_form(predicate, interp, env)
+            p = eval_expr(predicate, interp, env)
             if p:
-                return eval_form(consequent, interp, env)
-            return None, interp
+                return eval_expr(consequent, interp, env)
+            return None
         case Cons(Sym(None, 'if')):
             raise SyntaxError(
                 f'something is wrong with this if: {form}', location_from(form)
@@ -1906,28 +1960,27 @@ def eval_form(form, interp, env):
 
         case Cons(Sym(None, 'fn'), Cons(Vec() as params, Cons(body, Nil()))):
             closure = extract_closure(body, params, interp, env)
-            fn = Fn(None, params, body, closure)
+            fn = Fn(None, params, body, closure, interp)
             if interp.compilation_enabled:
                 compiled = compile_fn(fn, interp)
                 if compiled is not None:
-                    return compiled, interp
-            return fn, interp
+                    return compiled
+            return fn
         case Cons(Sym(None, 'fn'),
                   Cons(Sym(None, name), Cons(Vec() as params, Cons(body, Nil())))):
             # TODO: create a var to store the name in?
             closure = extract_closure(body, params, interp, env)
-            fn = Fn(name, params, body, closure)
+            fn = Fn(name, params, body, closure, interp)
             if interp.compilation_enabled:
                 compiled = compile_fn(fn, interp)
                 if compiled is not None:
-                    return compiled, interp
-            return fn, interp
+                    return compiled
+            return fn
         case Cons(Sym(None, 'fn'), _):
             raise SyntaxError(f'invalid fn form: {form}', location_from(form))
 
         case Cons(Sym(None, 'raise'), Cons(raisable_form, Nil() | None)):
-            # FIXME: this loses the effects of the evaluation on the interp
-            raisable, interp = eval_form(raisable_form, interp, env)
+            raisable = eval_expr(raisable_form, interp, env)
             raise raisable
         case Cons(Sym(None, 'raise')):
             raise SyntaxError(
@@ -1935,76 +1988,69 @@ def eval_form(form, interp, env):
             )
 
         case Cons(Sym(None, 'quote'), Cons(arg, Nil())):
-            return arg, interp
+            return arg
         case Cons(Sym(None, 'quote'), args):
             raise SemanticError(
                 f'wrong number of arguments to quote: {len(args)}'
             )
 
         case Cons(Sym(None, 'var'), Cons(Sym() as sym, Nil() | None)):
-            var = interp.resolve_symbol(sym, env)
-            return var, interp
+            return interp.resolve_symbol(sym, env)
         case Cons(Sym(None, 'var'), _):
             raise SemanticError(
                 f'invalid special form var: var takes 1 symbol as argument: {form}'
             )
 
         case Cons(proc_form, args):
-            proc, interp = eval_form(proc_form, interp, env)
-
+            proc = eval_expr(proc_form, interp, env)
+            if isinstance(proc, RTFn):
+                raise TypeError(
+                    'attempted to call top level function outside top level'
+                )
             arg_vals = []
             for arg in args:
-                arg_val, interp = eval_form(arg, interp, env)
+                arg_val = eval_expr(arg, interp, env)
                 arg_vals.append(arg_val)
             while True:
                 try:
-                    # Assume proc is an Fn
-                    if isinstance(proc, IFn):
-                        return proc(interp, *arg_vals)
-                    # python function
-                    return proc(*arg_vals), interp
+                    return proc(*arg_vals)
                 except RecurError as e:
                     arg_vals = e.arg_vals
 
         case Sym(None, 'true'):
-            return True, interp
+            return True
         case Sym(None, 'false'):
-            return False, interp
+            return False
         case Sym(None, 'nil'):
-            return None, interp
+            return None
 
-        case Sym(None, name) as sym:
+        case Sym() as sym:
             resolved = interp.resolve_symbol(sym, env)
             if isinstance(resolved, Var):
-                return resolved.value, interp
-            return resolved, interp
-        case Sym(ns_name, name) as sym:
-            var = interp.resolve_symbol(sym, env)
-            if isinstance(var, Var):
-                return var.value, interp
-            return var, interp
+                return resolved.value
+            return resolved
 
         case ArrayMap() | Map() as m:
             result_m = ArrayMap.empty()
             for k, v in m.items():
-                k_val, interp = eval_form(k, interp, env)
-                v_val, interp = eval_form(v, interp, env)
+                k_val = eval_expr(k, interp, env)
+                v_val = eval_expr(v, interp, env)
                 result_m = result_m.assoc(k_val, v_val)
-            return result_m, interp
+            return result_m
         case Vec() as vec:
             values = []
             for sub_form in vec:
-                value, interp = eval_form(sub_form, interp, env)
+                value = eval_expr(sub_form, interp, env)
                 values.append(value)
-            return Vec.from_iter(values), interp
+            return Vec.from_iter(values)
 
-        case IFn():
-            return form, interp
+        case RTFn():
+            return form
         # These have to go at the bottom because map, vec and keyword, etc
         # implement callable as well, but we are just wanting to deal with
         # python functions here
         case f if callable(f):
-            return f, interp
+            return f
 
     raise NotImplementedError(form)
 
@@ -2068,8 +2114,8 @@ def macroexpand_1(form, interp):
         # work unless we thread the interpreter through as well...
         match form:
             case Cons(Sym() as sym, args) if is_macro(sym, interp):
-                proc, interp = eval_form(sym, interp, ArrayMap.empty())
-                if isinstance(proc, IFn):
+                proc = eval_expr(sym, interp, ArrayMap.empty())
+                if isinstance(proc, RTFn):
                     expanded_form, interp = proc(interp, *tuple(args))
                 else:
                     expanded_form = proc(*tuple(args))
@@ -2097,12 +2143,13 @@ def macroexpand(form, interp):
 
     def coalgebra(form):
         nonlocal interp
+
         # I think we may find that generating symbols won't
         # work unless we thread the interpreter through as well...
         match form:
             case Cons(Sym() as sym, args) if is_macro(sym, interp):
-                proc, interp = eval_form(sym, interp, ArrayMap.empty())
-                if isinstance(proc, IFn):
+                proc = eval_expr(sym, interp, ArrayMap.empty())
+                if isinstance(proc, RTFn):
                     expanded_form, interp = proc(interp, *tuple(args))
                 else:
                     expanded_form = proc(*tuple(args))
@@ -2189,8 +2236,9 @@ def expand_and_evaluate_forms(forms, interp):
     for form in forms:
         form0 = expand_quasi_quotes(form, interp)
         expanded, interp = macroexpand(form0, interp)
+        # TODO: validate stage
         defined, interp = create_defs(expanded, interp)
-        result, interp = eval_form(defined, interp, Map.empty())
+        result, interp = eval_top_level_form(defined, interp)
         results.append(result)
     return results, interp
 

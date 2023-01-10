@@ -1320,8 +1320,8 @@ def test_compiler__quoted_data(
     from pack.interp import compile_fn
 
     text = f"""\
-    (ns user)
     (require 'pack.core)
+    (ns user)
     {fn_txt}
     """
     forms = read_all_forms(text)
@@ -1333,6 +1333,26 @@ def test_compiler__quoted_data(
     lines = compile_fn(fn, interp, mode='lines')
 
     assert lines == expected_lines
+
+
+@pytest.mark.parametrize('fn_txt,expected_result', [
+    ('((fn f [] [1 2 3 4]))',
+     Vec.from_iter((1, 2, 3, 4,))),
+])
+def test_compiler__evaluate_vector(
+        fn_txt, expected_result, initial_interpreter
+):
+    text = f"""\
+    (ns pack.core)
+    (require 'pack.core)
+    (def *compile* true)
+    (ns user)
+    {fn_txt}
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+    assert results[-1] == expected_result
 
 
 def test_ana():
