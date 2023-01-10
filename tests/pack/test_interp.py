@@ -1048,8 +1048,8 @@ def test_defmacro(initial_interpreter):
     (def list (fn [& elements] elements))
     (def first
         (fn [xs]
-            (if (list? xs)
-                (. xs hd))))
+            (do (if (list? xs)
+                (. xs hd)))))
     (def rest
         (fn [xs]
             (if (list? xs)
@@ -1070,7 +1070,7 @@ def test_defmacro(initial_interpreter):
     (-> 7
         (+ 7))
     """
-    forms = read_all_forms(text)
+    forms = read_all_forms(FileString(text, "fake.pack", 1, 0))
 
     results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
 

@@ -419,6 +419,14 @@ class ArrayMap(Mapping):
             (k, v) for (k, v) in self.items() if k != key
         )
 
+    def __or__(self, other):
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        result = self
+        for k, v in other.items():
+            result = result.assoc(k, v)
+        return result
+
     @staticmethod
     def empty():
         return _EMPTY_ARRAY_MAP
@@ -585,6 +593,14 @@ class Map(Mapping):
             new_entry = next(iter(new_subnode.items()))
             return self._with_replacement(idx, new_entry, leaf=True)
         return self._with_replacement(idx, new_subnode, leaf=False)
+
+    def __or__(self, other):
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        result = self
+        for k, v in other.items():
+            result = result.assoc(k, v)
+        return result
 
     def __repr__(self):
         return '{' + '  '.join(
@@ -1236,85 +1252,47 @@ rt_in_ns = RTFn(_rt_in_ns)
 
 
 def extract_closure(body, params, interp, env):
-    # To decide is, whether or not the values from the interp should be
-    # captured as they are or not... I think the right answer is to
-    # do so...
-    # TODO
-    m = ArrayMap.empty()  # closure. i.e. the result
+    """
+    We write a bottom up traversal that builds a set of symbols that
+    are unresolved. As we encounter them in binding forms, we remove
+    them from the set.
+    """
+    def dissoc_all(the_map, keys):
+        return reduce(lambda m, k: m.dissoc(k), keys, the_map)
 
-    # TODO: combine params and lets into bound_vars and use a Set for this
-    lets = ArrayMap.from_iter([(p, p) for p in params])
-
-    def aux(expr, m, lets):
+    def find_frees_alg(expr):
         match expr:
-            case str() | int() | float() | bool() | Nil() | None | Keyword():
-                return m
             case Sym(None, 'true' | 'false' | 'nil'):
-                return m
-            case Sym(None, name) as sym:
-                # Maybe this is also the point to do more macro expanding?
-                if sym in lets:
-                    return m
-                if sym in env:
-                    return m.assoc(sym, env[sym])
-                if name in interp.current_ns.defs:
-                    return m.assoc(sym, interp.current_ns.defs[name])
-                raise EvalError(
-                    f'Could not resolve symbol: {sym!r} in this context',
-                    location_from(sym)
-                )
-            case Sym(ns, name) if ns is not None:
-                # Can be resolved during evaluation ...
-                # TODO: think about whether it might be better to
-                # always resolve now and include in the closure...
-                return m
-            # Special forms
-            case Cons(Sym(None, '.'), Cons(obj, Cons(_, Nil()))):
-                # only the obj is evaluated, not the attr
-                return aux(obj, m, lets)
-            case Cons(Sym(None, '.'), _):
-                raise SyntaxError(
-                    f'invald member expression: {expr}', location_from(expr)
-                )
-            case Cons(Sym(None, 'def'), Cons(Sym(), Cons(init, Nil()))):
-                return aux(init, m, lets)
-            # TODO: let* ?
+                return ArrayMap.empty()
+            case Sym(None, _) as sym:
+                return ArrayMap.empty().assoc(sym, sym)
+            case Sym(ns, _) if ns is not None:
+                return ArrayMap.empty()
             case Cons(Sym(None, 'let*' | 'loop'),
                       Cons(Vec() as bindings, Cons(body, Nil()))):
-                for binding, init in take_pairs(bindings):
-                    m = aux(init, m, lets)
-                    lets = lets.assoc(binding, binding)
-                return aux(body, m, lets)
+                all_free_vars = body
+                for binding, init in reversed(tuple(take_pairs(bindings))):
+                    all_free_vars = all_free_vars.dissoc(binding)
+                    all_free_vars |= init
+                return all_free_vars
             case Cons(Sym(None, 'fn'),
-                      Cons(Sym(), Cons(Vec() as fn_params, Cons(body, Nil())))) \
-                    | Cons(Sym(None, 'fn'),
-                           Cons(Vec() as fn_params, Cons(body, Nil()))):
-                lets = reduce(lambda xs, p: xs.assoc(p, p), fn_params, lets)
-                return aux(body, m, lets)
+                      Cons(Sym() as sym, Cons(Vec() as fn_params, Cons(body, Nil())))):
+                return dissoc_all(body.dissoc(sym), fn_params)
             case Cons(Sym(None, 'fn'),
-                      Cons(Sym(), Cons(Vec() as fn_params, Cons(body, Nil())))) \
-                    | Cons(Sym(None, 'fn'),
-                           Cons(Vec() as fn_params, Cons(body, Nil()))):
-                lets = reduce(lambda xs, p: xs.assoc(p, p), fn_params, lets)
-                return aux(body, m, lets)
-            case Cons(Sym(None, 'quote'), _):
-                return m
-            case Cons(Sym(None, 'if' | 'raise' | 'var' | 'recur' | 'do'), args):
-                return reduce(lambda m, sub_form: aux(sub_form, m, lets), args, m)
-            case Cons(hd, _) as lst:
-                assert hd not in Special.all
-                return reduce(lambda m, sub_form: aux(sub_form, m, lets), lst, m)
-            case Vec() as vec:
-                return reduce(lambda m, sub_form: aux(sub_form, m, lets), vec, m)
-            case ArrayMap() | Map() as m:
-                for k, v in m.items():
-                    m = aux(k, m, lets)
-                    m = aux(v, m, lets)
-                return m
-            case _:
-                raise NotImplementedError(expr)
+                      Cons(Vec() as fn_params, Cons(body, Nil()))):
+                return dissoc_all(body, fn_params)
+            case other:
+                return reduce_expr(zero=ArrayMap.empty(),
+                                   plus=operator.or_,
+                                   expr=other)
 
-    return aux(body, m, lets)
+    unresolved_frees = dissoc_all(cata(find_frees_alg)(body), params)
+
+    def resolve(closure, unresolved_free):
+        return closure.assoc(
+            unresolved_free, interp.resolve_symbol(unresolved_free, env)
+        )
+    return reduce(resolve, unresolved_frees, ArrayMap.empty())
 
 
 def to_module_path(module_name):
@@ -1482,6 +1460,8 @@ def fmap(f, expr):
                         Cons(f(pred),
                              Cons(f(consequent),
                                   Cons(f(alternative), nil))))
+        case Cons(Sym(None, 'if') as s, Cons(pred, Cons(consequent, Nil()))):
+            return Cons(s, Cons(f(pred), Cons(f(consequent), nil)))
         case Cons(Sym(None, 'fn') as s, Cons(Vec() as params, Cons(body, Nil()))):
             return Cons(s, Cons(params, Cons(f(body), nil)))
         case Cons(Sym(None, 'fn') as s,
@@ -1539,6 +1519,9 @@ def reduce_expr(zero, plus, expr):
         case Cons(Sym(None, 'if'),
                   Cons(pred, Cons(consequent, Cons(alternative, Nil())))):
             return plus(plus(pred, consequent), alternative)
+        case Cons(Sym(None, 'if'),
+                  Cons(pred, Cons(consequent, Nil()))):
+            return plus(pred, consequent)
         case Cons(Sym(None, 'fn'), Cons(Vec(), Cons(body, Nil()))):
             return body
         case Cons(Sym(None, 'fn'), Cons(Sym(None, _), Cons(Vec(), Cons(body, Nil())))):
@@ -1734,6 +1717,10 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
                       Cons(predicate,
                            Cons(consequent, Cons(alternative, Nil())))):
                 return f'({consequent}) if ({predicate}) else ({alternative})'
+            case Cons(Sym(None, 'if'),
+                      Cons(predicate,
+                           Cons(consequent, Nil()))):
+                return f'({consequent}) if ({predicate}) else None'
             case Cons(Sym(None, '.'), Cons(obj, Cons(attr, Nil()))):
                 return f'({obj}).{attr}'
             case Cons(Sym(None, 'raise'), Cons(raisable, Nil())):
