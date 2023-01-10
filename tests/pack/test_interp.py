@@ -2,7 +2,8 @@ import pytest
 
 from pack.interp import FileString
 from pack.interp import (
-    try_read, read_sym, read_num, read_str, read_forms, read_all_forms
+    try_read, read_sym, read_num, read_str, read_forms, read_all_forms,
+    Reader
 )
 from pack.interp import Unmatched, SyntaxError, Unclosed
 from pack.interp import Sym, Keyword, Vec, ArrayMap, Map, List, Cons, nil
@@ -340,7 +341,7 @@ def test_try_read():
 
     # incomplete form
     with pytest.raises(Unclosed):
-        assert try_read('(') == (None, '')
+        assert try_read('(')
 
     assert try_read('(1)') == (Cons(1, nil), '')
 
@@ -366,8 +367,8 @@ def test_try_read__reader_macros():
 
 def test_try_read__comments():
     assert try_read(';hi\n1') == (1, '')
-    assert try_read(';hi\n') == (None, '')
-    assert try_read(';hi') == (None, '')
+    assert try_read(';hi\n') == (Reader.NOTHING, '')
+    assert try_read(';hi') == (Reader.NOTHING, '')
 
 
 def test_read_all_forms__comments():

@@ -749,6 +749,13 @@ def read_ident(text):
 
 def read_sym(text):
     (namespace, name), remaining = read_ident(text)
+    if namespace is None:
+        if name == 'true':
+            return True, remaining
+        if name == 'false':
+            return False, remaining
+        if name == 'nil':
+            return None, remaining
     return Sym(namespace, name), remaining
 
 
@@ -829,7 +836,7 @@ def read_comment(text):
             i += 1
             break
         i += 1
-    return None, text[i:]
+    return Reader.NOTHING, text[i:]
 
 
 def take_pairs(xs):
@@ -866,7 +873,7 @@ def read_list(opener, text, closing):
     while True:
         try:
             elem, remaining = try_read(remaining)
-            if elem is None:
+            if elem is Reader.NOTHING:
                 raise Unclosed(opener, location_from(text))
             elements.append(elem)
         except Unmatched as unmatched:
@@ -877,7 +884,7 @@ def read_list(opener, text, closing):
 
 def read_quoted_like(text, macro, prefix):
     to_quote, remaining = try_read(text)
-    if to_quote is None:
+    if to_quote is Reader.NOTHING:
         raise Unclosed(prefix, location_from(text))
     return Cons(Sym(None, macro), Cons(to_quote, nil)), remaining
 
@@ -926,10 +933,15 @@ class Unclosed(SyntaxError):
     "something started but never ended"
 
 
+class Reader:
+    NOTHING = object()
+    """A sentinel value for when there was nothing except whitespace or comment"""
+
+
 def try_read(text):
 
     if text == '':
-        return None, text
+        return Reader.NOTHING, text
     c = text[0]
 
     # eat whitespace
@@ -939,7 +951,7 @@ def try_read(text):
         else:
             text = text[1:]
         if text == '':
-            return None, text
+            return Reader.NOTHING, text
         c = text[0]
 
     closer = {'(': ')', '[': ']', '{': '}'}
@@ -978,9 +990,9 @@ def read_all_forms(text):
     forms = []
     while True:
         match try_read(remaining):
-            case None, '':
+            case Reader.NOTHING, '':
                 break
-            case None, remaining:
+            case Reader.NOTHING, remaining:
                 continue
             case form, remaining:
                 forms.append(form)
@@ -1262,8 +1274,6 @@ def extract_closure(body, params, interp, env):
 
     def find_frees_alg(expr):
         match expr:
-            case Sym(None, 'true' | 'false' | 'nil'):
-                return ArrayMap.empty()
             case Sym(None, _) as sym:
                 return ArrayMap.empty().assoc(sym, sym)
             case Sym(ns, _) if ns is not None:
@@ -1666,17 +1676,6 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
     # There will need to be a stage that converts expressions containing
     # raise, into a statement sequence? or... define a raise_ func
 
-    def remove_true_false_and_nil_alg(expr):
-        match expr:
-            case Sym(None, 'false'):
-                return False
-            case Sym(None, 'true'):
-                return True
-            case Sym(None, 'nil'):
-                return None
-            case _:
-                return expr
-
     def remove_complex_quote_alg(expr):
         match expr:
             case Cons(Sym(None, 'quote'), Cons(datum, Nil())):
@@ -1693,6 +1692,8 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         match expr:
             case str() | int() | float() | bool() | None as lit:
                 return repr(lit)
+            case Nil():
+                return 'None'
             case Keyword(None, n):
                 # because of the FileString instances, we have to convert to
                 # normal strings
@@ -1741,7 +1742,6 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
     prog1 = cata(compose(
         remove_vec_and_map_alg,
         remove_complex_quote_alg,
-        remove_true_false_and_nil_alg,
     ))(body)
     after_transforms = prog1
 
@@ -2004,13 +2004,6 @@ def eval_expr(form, interp, env):
                 except RecurError as e:
                     arg_vals = e.arg_vals
 
-        case Sym(None, 'true'):
-            return True
-        case Sym(None, 'false'):
-            return False
-        case Sym(None, 'nil'):
-            return None
-
         case Sym() as sym:
             resolved = interp.resolve_symbol(sym, env)
             if isinstance(resolved, Var):
@@ -2160,8 +2153,6 @@ def expanding_quasi_quote(form, interp):
     def quote_form(form):
         return Cons(Sym(None, 'quote'), Cons(form, nil))
     match form:
-        case Sym(None, 'true' | 'false' | 'nil'):
-            return form
         case Sym(None, 'require' | 'import'):
             return quote_form(form)
         case Sym(None, '.' | 'def' | 'let*' | 'if' | 'fn' | 'raise' | 'quote'
