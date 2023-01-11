@@ -16,6 +16,7 @@
 (def - (. operator sub))
 (def * (. operator mul))
 (def / (. operator truediv))
+(def = (. operator eq))
 (def < (. operator lt))
 (def <= (. operator le))
 (def > (. operator gt))

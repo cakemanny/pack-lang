@@ -687,6 +687,9 @@ class FileString(str):
         # Not worried about encumbering a single character
         return super().__getitem__(idx)
 
+    def __str__(self):
+        return super().__str__()
+
     def __repr__(self):
         return f"{self.file}:{self.lineno}:{self.col} " + super().__repr__()
 
@@ -1162,6 +1165,8 @@ def is_macro(sym, interp):
 
 
 class Fn:
+    PARAM_SEP = Sym(None, '&')
+
     def __init__(self, name, params, body, env, interp):
         assert isinstance(params, Vec)
         self.name = name
@@ -1171,9 +1176,9 @@ class Fn:
         self.interp = interp
 
     def _split_params(self, params: Vec):
-        if Sym(None, '&') not in params:
+        if Fn.PARAM_SEP not in params:
             return params, None
-        idx = params.index(Sym(None, '&'))
+        idx = params.index(Fn.PARAM_SEP)
         new_params = [params[i] for i in range(0, idx)]
         restparam = params[idx + 1]
         return new_params, restparam
@@ -1291,6 +1296,8 @@ def extract_closure(body, params, interp, env):
             case Cons(Sym(None, 'fn'),
                       Cons(Vec() as fn_params, Cons(body, Nil()))):
                 return dissoc_all(body, fn_params)
+            case Cons(Sym(None, 'var'), Cons(Sym() as sym, Nil())):
+                return ArrayMap.empty().assoc(sym, sym)
             case other:
                 return reduce_expr(zero=ArrayMap.empty(),
                                    plus=operator.or_,
@@ -1604,6 +1611,79 @@ def remove_quote_alg(datum):
 remove_quote = cata_f(fmap_datum)(compose(remove_vec_and_map_alg, remove_quote_alg))
 
 
+def create_deduce_scope_coalg():
+    """
+    Replace all bound variable names with ones with IDs appended
+    so that we no longer have to worry about scoping
+    """
+    i = 0
+
+    def genid():
+        nonlocal i
+        i += 1
+        return i
+
+    def mk_new_sym(sym):
+        assert sym.ns is None
+        return Sym(None, f'{sym.n}.{genid()}')
+
+    def number_params(new_params_and_mapping, p):
+        "to be used in a reduce"
+        new_params, m = new_params_and_mapping  # Vec, Map
+        if p == Fn.PARAM_SEP:
+            return new_params.conj(p), m
+        else:
+            new_p = mk_new_sym(p)  # !
+            return new_params.conj(new_p), m.assoc(p, new_p)
+
+    def deduce_scope_coalg(expr_and_new_bnds):
+        """
+        This algebra takes a form and threads through a mapping of
+        old names to new names
+
+        (ExprF[Expr], Map) -> ExprF[(Expr, Map)]
+        """
+        match expr_and_new_bnds:
+            case (Cons(Sym(None, 'let*' | 'loop') as s,
+                       Cons(Vec() as bindings, Cons(body, Nil()))),
+                  m):
+                new_bindings = []
+                for name, init in take_pairs(bindings):
+                    new_name = mk_new_sym(name)  # !
+                    new_bindings += [new_name, (init, m)]
+                    m = m.assoc(name, new_name)
+                return Cons(s,
+                            Cons(Vec.from_iter(new_bindings),
+                                 Cons((body, m), nil)))
+            case (Cons(Sym(None, 'fn') as s,
+                       Cons(Sym() as fn_name_sym,
+                            Cons(Vec() as fn_params, Cons(body, Nil())))),
+                  m):
+                new_fn_name = mk_new_sym(fn_name_sym)
+                m = m.assoc(fn_name_sym, new_fn_name)
+                new_params, m = reduce(number_params, fn_params, (Vec.empty(), m))
+                return Cons(s,
+                            Cons(new_fn_name,
+                                 Cons(new_params,
+                                      Cons((body, m), nil))))
+            case (Cons(Sym(None, 'fn') as s,
+                       Cons(Vec() as fn_params, Cons(body, Nil()))),
+                  m):
+                new_params, m = reduce(number_params, fn_params, (Vec.empty(), m))
+                return Cons(s, Cons(Vec.from_iter(new_params), Cons((body, m), nil)))
+            case (Sym(None, _) as sym,
+                  m):
+                if sym in m:
+                    return m[sym]
+                return sym
+            # thread the new bindings into the rest of the structure
+            case (other, m):
+                return fmap(lambda x: (x, m), other)
+        raise NotImplementedError(expr_and_new_bnds)
+
+    return deduce_scope_coalg
+
+
 # This is in ultra-draft idea mode at the moment
 def compile_fn(fn: Fn, interp, *, mode='func'):
     """
@@ -1687,6 +1767,8 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         """
         assume all subexpressions have already been compiled and then embedded
         into the structure of our AST
+
+        TODO: do , let* , loop, recur, complex if, fn,
         """
 
         match expr:
@@ -1711,9 +1793,10 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
                     # is referring to a Var?
                     if isinstance(closure[sym], Var):
                         return mangle_name(n) + '.value'
-                raise Uncompilable(f'unresolved: {n}')
+                raise Uncompilable(f'unresolved: {n}', location_from(n))
             case Sym() as sym:
                 return mangle_name(str(sym)) + '.value'
+
             case Cons(Sym(None, 'if'),
                       Cons(predicate,
                            Cons(consequent, Cons(alternative, Nil())))):
@@ -1732,17 +1815,33 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
             case Cons(Sym(None, 'quote'), Cons(Sym(ns, n), Nil())):
                 return f'__Sym({str(ns)!r}, {str(n)!r})'
 
+            case Cons(Sym(None, 'var'), Cons(Sym(None, n) as sym, Nil())):
+                if sym in closure:
+                    if isinstance(closure[sym], Var):
+                        return mangle_name(sym.n)
+                raise Uncompilable(f'unresolved: {n}', location_from(n))
+            case Cons(Sym(None, 'var'), Cons(Sym(ns, n) as sym, Nil())):
+                if sym in closure:
+                    if isinstance(closure[sym], Var):
+                        return mangle_name(str(sym))
+                raise Uncompilable(f'unresolved: {sym}', location_from(sym))
+
             case Cons(proc_form, args):
                 # TODO: deal with Fns that take an interpreter
                 joined_args = ', '.join(args)
                 return f'({proc_form})({joined_args})'
             case _:
-                raise Uncompilable(expr)
+                raise Uncompilable(expr, location_from(expr))
 
+    # I don't think it's possible to combine this ana with the below cata
+    # due to the alternate carrier type
+    prog0 = ana(create_deduce_scope_coalg())((body, ArrayMap.empty()))
+
+    # These transforms inside this compose run last to first
     prog1 = cata(compose(
         remove_vec_and_map_alg,
         remove_complex_quote_alg,
-    ))(body)
+    ))(prog0)
     after_transforms = prog1
 
     def used_qualifieds_alg(expr):

@@ -1163,6 +1163,34 @@ def test_expand_and_evaluate__refer(initial_interpreter):
 # -------------
 
 
+def test_deduce_scope():
+    from pack.interp import ana, create_deduce_scope_coalg
+
+    form = read_all_forms("""\
+    (do
+        (let* [x 5 y 9] (* x y)))
+    """)[0]
+
+    assert ana(create_deduce_scope_coalg())((form, ArrayMap.empty())) \
+        == read_all_forms("""
+    (do
+        (let* [x.1 5 y.2 9] (* x.1 y.2)))
+    """)[0]
+
+    form = read_all_forms("""\
+    (fn [x y z & rest]
+        (let* [u 5 w 9]
+            (some-f x y rest w)))
+    """)[0]
+
+    assert ana(create_deduce_scope_coalg())((form, ArrayMap.empty())) \
+        == read_all_forms("""
+    (fn [x.1 y.2 z.3 & rest.4]
+        (let* [u.5 5 w.6 9]
+            (some-f x.1 y.2 rest.4 w.6)))
+    """)[0]
+
+
 def test_compiler__0(initial_interpreter):
     from pack.interp import compile_fn
 
@@ -1214,6 +1242,7 @@ def test_compiler__1(initial_interpreter):
     ('(fn f [] :a-key)', ["return __Keyword(None, 'a-key')"]),
     ('(fn f [] ((. "hi" islower)))', ["return (('hi').islower)()"]),
     ('(fn f [] ((. "hi" index) "i"))', ["return (('hi').index)('i')"]),
+    ('(fn f [] (var *compile*))', ["return _STAR_compile_STAR_"]),
 ])
 def test_compiler__simple_expressions(
         fn_txt, expected_lines, initial_interpreter
