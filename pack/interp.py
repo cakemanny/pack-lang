@@ -1455,41 +1455,32 @@ def fmap(f, expr):
         case Cons(Sym(None, 'do') as s, args):
             return Cons(s, List.from_iter(map(f, args)))
         case Cons(Sym(None, 'def'), _):
-            raise ValueError(f'def is a statement not an expression: {expr}')
-
-        # I think we have to assume that the lhs in the bindings
-        # are symbols - ... so I think that means we only call f on the values
+            raise ValueError(f'def is only allowed at the top level: {expr}')
         case Cons(Sym(None, 'let*' | 'loop') as s,
-                  Cons(Vec() as bindings, Cons(body, Nil() | None))):
+                  Cons(Vec() as bindings, Cons(body, Nil()))):
             def map_seconds(f, vec):
                 for binding, init in take_pairs(vec):
                     yield binding
                     yield f(init)
-            return Cons(s,
-                        Cons(Vec.from_iter(map_seconds(f, bindings)),
-                             Cons(f(body), nil)))
+            new_bindings = Vec.from_iter(map_seconds(f, bindings))
+            return Cons(s, Cons(new_bindings, Cons(f(body), nil)))
         case Cons(Sym(None, 'recur') as s, args):
             return Cons(s, List.from_iter(map(f, args)))
-        case Cons(Sym(None, 'if') as s,
-                  Cons(pred, Cons(consequent, Cons(alternative, Nil())))):
-
-            return Cons(s,
-                        Cons(f(pred),
-                             Cons(f(consequent),
-                                  Cons(f(alternative), nil))))
-        case Cons(Sym(None, 'if') as s, Cons(pred, Cons(consequent, Nil()))):
-            return Cons(s, Cons(f(pred), Cons(f(consequent), nil)))
+        # (if predicate consequent alternative)
+        case Cons(Sym(None, 'if') as s, Cons(pred, Cons(con, Cons(alt, Nil())))):
+            return Cons(s, Cons(f(pred), Cons(f(con), Cons(f(alt), nil))))
+        case Cons(Sym(None, 'if') as s, Cons(pred, Cons(con, Nil()))):
+            return Cons(s, Cons(f(pred), Cons(f(con), nil)))
         case Cons(Sym(None, 'fn') as s, Cons(Vec() as params, Cons(body, Nil()))):
             return Cons(s, Cons(params, Cons(f(body), nil)))
         case Cons(Sym(None, 'fn') as s,
                   Cons(Sym(None, _) as n, Cons(Vec() as params, Cons(body, Nil())))):
             return Cons(s, Cons(n, Cons(params, Cons(f(body), nil))))
-        case Cons(Sym(None, 'raise') as s, Cons(r, Nil() | None)):
-            # Raise is also a statement?
+        case Cons(Sym(None, 'raise') as s, Cons(r, Nil())):
             return Cons(s, Cons(f(r), nil))
         case Cons(Sym(None, 'quote'), Cons(_, Nil())):
             return expr
-        case Cons(Sym(None, 'var'), Cons(Sym(), Nil() | None)):
+        case Cons(Sym(None, 'var'), Cons(Sym(), Nil())):
             return expr
         case Cons() as lst:
             return List.from_iter(map(f, lst))
@@ -1528,7 +1519,7 @@ def reduce_expr(zero, plus, expr):
         case Cons(Sym(None, 'do'), args):
             return reduce(plus, args, zero)
         case Cons(Sym(None, 'let*' | 'loop'),
-                  Cons(Vec() as bindings, Cons(body, Nil() | None))):
+                  Cons(Vec() as bindings, Cons(body, Nil()))):
             every_second = islice(bindings, 1, None, 2)
             return plus(reduce(plus, every_second, zero), body)
         case Cons(Sym(None, 'recur'), args):
@@ -1543,11 +1534,11 @@ def reduce_expr(zero, plus, expr):
             return body
         case Cons(Sym(None, 'fn'), Cons(Sym(None, _), Cons(Vec(), Cons(body, Nil())))):
             return body
-        case Cons(Sym(None, 'raise'), Cons(r, Nil() | None)):
+        case Cons(Sym(None, 'raise'), Cons(r, Nil())):
             return r
         case Cons(Sym(None, 'quote'), Cons(_, Nil())):
             return zero
-        case Cons(Sym(None, 'var'), Cons(Sym(), Nil() | None)):
+        case Cons(Sym(None, 'var'), Cons(Sym(), Nil())):
             return zero
         case Cons() as lst:
             return reduce(plus, iter(lst), zero)
@@ -1611,13 +1602,11 @@ def remove_quote_alg(datum):
 remove_quote = cata_f(fmap_datum)(compose(remove_vec_and_map_alg, remove_quote_alg))
 
 
-def create_deduce_scope_coalg():
+def create_deduce_scope_coalg(i=0):
     """
     Replace all bound variable names with ones with IDs appended
     so that we no longer have to worry about scoping
     """
-    i = 0
-
     def genid():
         nonlocal i
         i += 1
@@ -1978,7 +1967,7 @@ def eval_expr(form, interp, env):
                 location_from(form)
             )
 
-        case Cons(Sym(None, 'let*'), Cons(Vec() as bindings, Cons(body, Nil() | None))):
+        case Cons(Sym(None, 'let*'), Cons(Vec() as bindings, Cons(body, Nil()))):
             if len(bindings) % 2 != 0:
                 raise SyntaxError(
                     'uneven number of forms in let bindings', location_from(bindings)
@@ -1996,7 +1985,7 @@ def eval_expr(form, interp, env):
         case Cons(Sym(None, 'let*'), _):
             raise SyntaxError(f"invalid let: {form}", location_from(form))
 
-        case Cons(Sym(None, 'loop'), Cons(Vec() as bindings, Cons(body, Nil() | None))):
+        case Cons(Sym(None, 'loop'), Cons(Vec() as bindings, Cons(body, Nil()))):
             if len(bindings) % 2 != 0:
                 raise SyntaxError(
                     'uneven number of forms in loop bindings', location_from(bindings)
@@ -2028,13 +2017,11 @@ def eval_expr(form, interp, env):
         case Cons(Sym(None, 'if'),
                   Cons(predicate,
                        Cons(consequent, Cons(alternative, Nil())))):
-            p = eval_expr(predicate, interp, env)
-            if p:
+            if eval_expr(predicate, interp, env):
                 return eval_expr(consequent, interp, env)
             return eval_expr(alternative, interp, env)
         case Cons(Sym(None, 'if'), Cons(predicate, Cons(consequent, Nil()))):
-            p = eval_expr(predicate, interp, env)
-            if p:
+            if eval_expr(predicate, interp, env):
                 return eval_expr(consequent, interp, env)
             return None
         case Cons(Sym(None, 'if')):
@@ -2063,7 +2050,7 @@ def eval_expr(form, interp, env):
         case Cons(Sym(None, 'fn'), _):
             raise SyntaxError(f'invalid fn form: {form}', location_from(form))
 
-        case Cons(Sym(None, 'raise'), Cons(raisable_form, Nil() | None)):
+        case Cons(Sym(None, 'raise'), Cons(raisable_form, Nil())):
             raisable = eval_expr(raisable_form, interp, env)
             raise raisable
         case Cons(Sym(None, 'raise')):
@@ -2078,7 +2065,7 @@ def eval_expr(form, interp, env):
                 f'wrong number of arguments to quote: {len(args)}'
             )
 
-        case Cons(Sym(None, 'var'), Cons(Sym() as sym, Nil() | None)):
+        case Cons(Sym(None, 'var'), Cons(Sym() as sym, Nil())):
             return interp.resolve_symbol(sym, env)
         case Cons(Sym(None, 'var'), _):
             raise SemanticError(
@@ -2091,10 +2078,7 @@ def eval_expr(form, interp, env):
                 raise TypeError(
                     'attempted to call top level function outside top level'
                 )
-            arg_vals = []
-            for arg in args:
-                arg_val = eval_expr(arg, interp, env)
-                arg_vals.append(arg_val)
+            arg_vals = [eval_expr(arg, interp, env) for arg in args]
             while True:
                 try:
                     return proc(*arg_vals)
@@ -2115,11 +2099,9 @@ def eval_expr(form, interp, env):
                 result_m = result_m.assoc(k_val, v_val)
             return result_m
         case Vec() as vec:
-            values = []
-            for sub_form in vec:
-                value = eval_expr(sub_form, interp, env)
-                values.append(value)
-            return Vec.from_iter(values)
+            return Vec.from_iter(
+                eval_expr(sub_form, interp, env) for sub_form in vec
+            )
 
         case RTFn():
             return form
