@@ -1722,11 +1722,9 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         raise e
 
     def create_fn(body_lines, resolved_qualifieds):
-        # FIXME: we will almost definitely have to do some param name
-        # conversion
         args = ', '.join(
-            [sym.n for sym in params]
-            + [f'*{sym.n}' for sym in filter(None, [restparam])]
+            [mangle_name(sym.n) for sym in params]
+            + [f'*{mangle_name(sym.n)}' for sym in filter(None, [restparam])]
         )
         fn_body = '\n'.join([f'  {b}' for b in body_lines])
         fn_name = mangle_name(
@@ -1749,9 +1747,6 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         ns = {}
         exec(txt, globals, ns)
         return ns['__create_fn__'](**locals)
-
-    # First stage should be to make all names unique, and put the values
-    # in a single map... maybe
 
     # There will need to be a stage that converts expressions containing
     # raise, into a statement sequence? or... define a raise_ func
@@ -1826,8 +1821,11 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
                         return mangle_name(str(sym))
                 raise Uncompilable(f'unresolved: {sym}', location_from(sym))
 
+            case Cons(Sym(None, _) as s, args) if s in Special.all:
+                # Not yet implemented
+                raise Uncompilable(expr, location_from(expr))
+
             case Cons(proc_form, args):
-                # TODO: deal with Fns that take an interpreter
                 joined_args = ', '.join(args)
                 return f'({proc_form})({joined_args})'
             case _:
