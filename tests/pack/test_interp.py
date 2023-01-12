@@ -1191,6 +1191,71 @@ def test_deduce_scope():
     """)[0]
 
 
+def test_hoist_lambda():
+    from pack.interp import cata, create_hoist_lambda_alg
+
+    form = read_all_forms("""\
+    (do
+        (fn [x y z] (y x z)))
+    """)[0]
+
+    assert cata(create_hoist_lambda_alg())(form) == read_all_forms("""
+    (do
+        (let* [__t.1 (fn [x y z] (y x z))]
+            __t.1))
+    """)[0]
+
+
+def test_replace_letstar():
+    from pack.interp import cata, replace_letstar_alg
+
+    form = read_all_forms("""\
+    (do
+        (let* [x 5 y 9] (* x y)))
+    """)[0]
+
+    assert cata(replace_letstar_alg)(form) == read_all_forms("""
+    (do
+        (do
+            (set! x 5)
+            (set! y 9)
+            (* x y)))
+    """)[0]
+
+
+@pytest.mark.skip
+def test_replace_loop_recur():
+    """
+    TODO: one of the next ones to implement
+    """
+    from pack.interp import cata_f, fmap_setbang, replace_loop_recur
+
+    form = read_all_forms("""\
+    (loop [x 2 y 3]
+        (if (= x 0)
+            y
+            (recur (- x 1) (* x y))))
+    """)[0]
+
+    assert cata_f(fmap_setbang)(replace_loop_recur)(form) == read_all_forms("""
+    (do
+        (set! x 2)
+        (set! y 3)
+        (while-true
+            (if (= x 0)
+                (do
+                    (set! __t.1 y)
+                    (break))
+                (do
+                    (set! __t.2 (- x 1))
+                    (set! __t.3 (* x y))
+                    (set! x __t.2)
+                    (set! y __t.3)
+                    (continue))))
+        __t.1)
+    """)[0]
+
+
 def test_compiler__0(initial_interpreter):
     from pack.interp import compile_fn
 

@@ -1572,6 +1572,24 @@ def fmap_datum(f, datum):
             raise NotImplementedError(datum)
 
 
+def fmap_setbang(f, expr):
+    match expr:
+        case Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, Nil()))):
+            return Cons(Sym(None, 'set!'), Cons(name_sym, Cons(f(init), Nil())))
+        case Cons(Sym(None, 'let*'), _):
+            raise ValueError('unexpected let*')
+        case other:
+            return fmap(f, other)
+
+
+def reduce_expr_setbang(zero, plus, expr):
+    match expr:
+        case Cons(Sym(None, 'set!'), Cons(_, Cons(init, Nil()))):
+            return init
+        case other:
+            return reduce_expr(zero, plus, other)
+
+
 def remove_vec_and_map_alg(expr):
     "replace map and vector literals with their constructors"
     match expr:
@@ -1586,7 +1604,7 @@ def remove_vec_and_map_alg(expr):
 
 def remove_quote_alg(datum):
     """
-    remove complex quoted datum by replacing literals with their
+    remove complex quoted data by replacing literals with their
     constructors. quoted symbols remain.
     '(a 1 [b 2 {c 3 :d 4}]) -> (list 'a 1 (vector 'b 2 (hash-map 'c 3 :d 4)))
     """
@@ -1600,6 +1618,17 @@ def remove_quote_alg(datum):
 
 
 remove_quote = cata_f(fmap_datum)(compose(remove_vec_and_map_alg, remove_quote_alg))
+
+
+def remove_complex_quote_alg(expr):
+    """
+    an algebra to find quoted data within our program and rewrite it
+    """
+    match expr:
+        case Cons(Sym(None, 'quote'), Cons(datum, Nil())):
+            return remove_quote(datum)
+        case _:
+            return expr
 
 
 def create_deduce_scope_coalg(i=0):
@@ -1673,6 +1702,63 @@ def create_deduce_scope_coalg(i=0):
     return deduce_scope_coalg
 
 
+def create_hoist_lambda_alg(i=0):
+    """
+    We hoist lambda forms into let* bindings so that we can
+    write them as defs
+
+    (fn [x] ...) -> (let* [t.1 (fn [x] ...)]
+                      t.1)
+    ->
+
+    def t_DOT_1(x):
+        ...
+    return t_DOT_1
+    """
+    def next_temp():
+        nonlocal i
+        i += 1
+        return Sym(None, '__t.1')
+
+    def hoist_lambda_alg(expr):
+        match expr:
+            case Cons(Sym(None, 'fn'), _) as fn:
+                t = next_temp()
+                return Cons(Sym(None, 'let*'),
+                            Cons(Vec.from_iter([t, fn]),
+                                 Cons(t, nil)))
+            case other:
+                return other
+    return hoist_lambda_alg
+
+
+def replace_letstar_alg(expr):
+    """
+    replace let* bindings with 'set!' assignment
+    (let* [x 5 y 9] ...) -> (do (set! x 5) (set! y 9) ...)
+    """
+    match expr:
+        case Cons(Sym(None, 'let*'),
+                  Cons(Vec() as bindings,
+                       Cons(body, Nil()))):
+            set_bang_forms = [
+                Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, nil)))
+                for name_sym, init in take_pairs(bindings)
+            ]
+            return Cons(Sym(None, 'do'),
+                        List.from_iter(set_bang_forms + [body]))
+        case other:
+            return other
+
+
+def hoist_statements(expr):
+    """
+    (if (do ... e1) s1 s2) -> (do ... (if e2 s1 s2))
+    """
+    # TODO
+    pass
+
+
 # This is in ultra-draft idea mode at the moment
 def compile_fn(fn: Fn, interp, *, mode='func'):
     """
@@ -1740,19 +1826,18 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
     # There will need to be a stage that converts expressions containing
     # raise, into a statement sequence? or... define a raise_ func
 
-    def remove_complex_quote_alg(expr):
+    def compile_statement_alg(expr):
         match expr:
-            case Cons(Sym(None, 'quote'), Cons(datum, Nil())):
-                return remove_quote(datum)
-            case _:
-                return expr
+            case Cons(Sym(None, 'set!'), Cons(name, Cons(init, Nil()))):
+                return [f'{name} = {init}']
+        assert False, "TODO"
 
     def compile_expr_alg(expr):
         """
         assume all subexpressions have already been compiled and then embedded
         into the structure of our AST
 
-        TODO: do , let* , loop, recur, complex if, fn,
+        TODO: do , loop, recur, complex if, fn,
         """
 
         match expr:
@@ -1767,16 +1852,15 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
             case Keyword(ns, n):
                 return f'__Keyword({str(ns)!r}, {str(n)!r})'
             case Sym(None, n) as sym:
-                # TODO: find let-bound vars
                 if sym == restparam:
                     return mangle_name(n)
                 if sym in params:
                     return mangle_name(n)
                 if sym in closure:
-                    # Or... should this be doing a .value access when this
-                    # is referring to a Var?
                     if isinstance(closure[sym], Var):
                         return mangle_name(n) + '.value'
+                # must be a bound var
+                return mangle_name(n)
                 raise Uncompilable(f'unresolved: {n}', location_from(n))
             case Sym() as sym:
                 return mangle_name(str(sym)) + '.value'
@@ -1810,6 +1894,8 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
                         return mangle_name(str(sym))
                 raise Uncompilable(f'unresolved: {sym}', location_from(sym))
 
+            case Cons(Sym(None, 'set!'), _):
+                raise Uncompilable(expr)
             case Cons(Sym(None, _) as s, args) if s in Special.all:
                 # Not yet implemented
                 raise Uncompilable(expr, location_from(expr))
@@ -1820,15 +1906,37 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
             case _:
                 raise Uncompilable(expr, location_from(expr))
 
+    class Counter:
+        def __init__(self, i=0):
+            self.i = i
+
+        def __iadd__(self, j):
+            if not isinstance(j, int):
+                return NotImplemented
+            self.i += j
+            return self
+
+        def __str__(self):
+            return str(self.i)
+
+    var_id_counter = Counter()
+
     # I don't think it's possible to combine this ana with the below cata
     # due to the alternate carrier type
-    prog0 = ana(create_deduce_scope_coalg())((body, ArrayMap.empty()))
+    prog0 = ana(create_deduce_scope_coalg(var_id_counter))((body, ArrayMap.empty()))
 
     # These transforms inside this compose run last to first
     prog1 = cata(compose(
+        replace_letstar_alg,
+        create_hoist_lambda_alg(var_id_counter),
         remove_vec_and_map_alg,
         remove_complex_quote_alg,
     ))(prog0)
+
+    # After now adding set!, we need a different fmap!!
+
+    cata_sb = cata_f(fmap_setbang)
+
     after_transforms = prog1
 
     def used_qualifieds_alg(expr):
@@ -1836,9 +1944,9 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
             case Sym(ns, _) as sym if ns is not None:
                 return (sym,)
             case other:
-                return reduce_expr(zero=(), plus=operator.add, expr=other)
+                return reduce_expr_setbang(zero=(), plus=operator.add, expr=other)
 
-    used_qualifieds = cata(used_qualifieds_alg)(after_transforms)
+    used_qualifieds = cata_sb(used_qualifieds_alg)(after_transforms)
 
     resolved_qualifieds = [
         interp.resolve_symbol(sym, ArrayMap.empty()) for sym in used_qualifieds
@@ -1849,7 +1957,7 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         if restparam is not None:
             mn = mangle_name(restparam.n)
             body_lines += [f'{mn} = __List_from_iter({mn})']
-        body_lines += ['return ' + cata(compile_expr_alg)(after_transforms)]
+        body_lines += ['return ' + cata_sb(compile_expr_alg)(after_transforms)]
         if mode == 'lines':
             return body_lines
         return create_fn(body_lines, resolved_qualifieds)
