@@ -616,6 +616,54 @@ def test_expand_and_evaluate__def_var_fn(initial_interpreter):
     assert results[1].value.env == Map.empty()
 
 
+@pytest.mark.parametrize('prog_txt', [
+    '(fn [1] nil)',  # non name
+    '(fn f [1] nil)',  # non name
+    '(fn user/f [] nil)',  # non-simple name fn
+    '(fn [user/x] nil)',  # non-simple param
+    '(fn f [user/x] nil)',  # non-simple param
+])
+def test_expand_and_evaluate__fn__syntax(initial_interpreter, prog_txt):
+
+    forms = read_all_forms(f"""\
+    (ns pack.core)
+    {prog_txt}
+    """)
+
+    with pytest.raises(SyntaxError):
+        expand_and_evaluate_forms(
+            forms, initial_interpreter
+        )
+
+
+@pytest.mark.parametrize('prog_txt', [
+    '(def)',  # obvs
+    '(def x nil nil)',  # too many init values
+    '(if 1 (def x))',  # also non top level
+    # '(fn [] (def x))',  # inside fn
+])
+def test_expand_and_evaluate__def_error(initial_interpreter, prog_txt):
+    forms = read_all_forms(f"""\
+    (ns pack.core)
+    {prog_txt}
+    """)
+    with pytest.raises(SyntaxError):
+        expand_and_evaluate_forms(
+            forms, initial_interpreter
+        )
+
+
+def test_expand_and_evaluate__def_error_with_fn(initial_interpreter):
+    # Ideally this would return a SyntaxError instead
+    # but we will come back to that
+    forms = read_all_forms("""\
+    (ns pack.core)
+    (fn [] (def x))
+    """)
+    with pytest.raises(ValueError):
+        expand_and_evaluate_forms(forms, initial_interpreter)
+
+
 def test_expand_and_evaluate__resolve_error(initial_interpreter):
     import textwrap
     text = textwrap.dedent("""\
@@ -793,6 +841,25 @@ def test_expand_and_evaluate__recur_error(initial_interpreter):
 
     with pytest.raises(RecurError):
         expand_and_evaluate_forms(forms, initial_interpreter)
+
+
+def test_expand_and_evaluate__recur__non_tail(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (import operator)
+    (def = (. operator eq))
+    (def - (. operator sub))
+    (def + (. operator add))
+    (loop [x 10 y 0]
+        (if (= x 0)
+            y
+            (+ (- x 1) (recur y x))))
+    """
+    forms = read_all_forms(text)
+
+    with pytest.raises(SyntaxError) as exc_info:
+        expand_and_evaluate_forms(forms, initial_interpreter)
+    assert 'recur in non-tail' in str(exc_info.value)
 
 
 def test_expand_and_evaluate__eval(initial_interpreter):
@@ -1064,22 +1131,19 @@ def test_expand_and_evaluate__let__fn(initial_interpreter):
     assert results[-1] == 11
 
 
-def test_expand_and_evaluate__let__error(initial_interpreter):
+@pytest.mark.parametrize('prog_txt', [
+    '(let* [x 1 y] [x y])',  # uneven forms
+    '(let* [{:a a} {:a 1}] [a a])',  # destructuring
+    '(loop [x 1 y] [x y])',  # uneven forms
+    '(loop [{:a a} {:a 1}] [a a])',  # destructuring
+])
+def test_expand_and_evaluate__let__error(initial_interpreter, prog_txt):
 
     with pytest.raises(SyntaxError):
         results, interp = expand_and_evaluate_forms(
-            read_all_forms("""\
+            read_all_forms(f"""\
             (ns pack.core)
-            (let* [x 1 y] [x y])
-            """),
-            initial_interpreter
-        )
-
-    with pytest.raises(SyntaxError):
-        results, interp = expand_and_evaluate_forms(
-            read_all_forms("""\
-            (ns pack.core)
-            (let* [{:a a} {:a 1}] [x y])
+            {prog_txt}
             """),
             initial_interpreter
         )

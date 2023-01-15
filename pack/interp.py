@@ -788,6 +788,8 @@ def location_from(obj):
             return from_filestring(ns)
         case Sym(_, FileString() as n):
             return from_filestring(n)
+        case Cons(maybe_has_location, _):
+            return location_from(maybe_has_location)  # will be slightly off
         case PackLangError() as err:
             return err.location
     return None
@@ -2147,8 +2149,6 @@ def eval_expr(form, interp, env):
         case Cons(Sym(None, '.'), Cons(obj_expr, Cons(Sym(_, attr), Nil()))):
             obj = eval_expr(obj_expr, interp, env)
             return getattr(obj, attr)
-        case Cons(Sym(None, '.'), _):
-            raise SyntaxError(f'invald member expression: {form}', location_from(form))
 
         case Cons(Sym(None, 'do'), exprs):
             for expr in exprs:
@@ -2162,35 +2162,13 @@ def eval_expr(form, interp, env):
             )
 
         case Cons(Sym(None, 'let*'), Cons(Vec() as bindings, Cons(body, Nil()))):
-            if len(bindings) % 2 != 0:
-                raise SyntaxError(
-                    'uneven number of forms in let bindings', location_from(bindings)
-                )
-
             for binding, init in take_pairs(bindings):
-                if not isinstance(binding, Sym) or binding.ns is not None:
-                    raise SyntaxError(
-                        f'let* does not support destructuring: problem: {binding}',
-                        location_from(binding)
-                    )
                 init_val = eval_expr(init, interp, env)
                 env = env.assoc(binding, init_val)
             return eval_expr(body, interp, env)
-        case Cons(Sym(None, 'let*'), _):
-            raise SyntaxError(f"invalid let: {form}", location_from(form))
 
         case Cons(Sym(None, 'loop'), Cons(Vec() as bindings, Cons(body, Nil()))):
-            if len(bindings) % 2 != 0:
-                raise SyntaxError(
-                    'uneven number of forms in loop bindings', location_from(bindings)
-                )
-
             for binding, init in take_pairs(bindings):
-                if not isinstance(binding, Sym) or binding.ns is not None:
-                    raise SyntaxError(
-                        f'loop does not support destructuring: problem: {binding}',
-                        location_from(binding)
-                    )
                 init_val = eval_expr(init, interp, env)
                 env = env.assoc(binding, init_val)
             while True:
@@ -2199,8 +2177,6 @@ def eval_expr(form, interp, env):
                 except RecurError as e:
                     for (binding, _), val in zip(take_pairs(bindings), e.arg_vals):
                         env = env.assoc(binding, val)
-        case Cons(Sym(None, 'loop'), _):
-            raise SyntaxError(f"invalid loop: {form}", location_from(form))
 
         case Cons(Sym(None, 'recur'), args):
             arg_vals = [
@@ -2218,10 +2194,6 @@ def eval_expr(form, interp, env):
             if eval_expr(predicate, interp, env):
                 return eval_expr(consequent, interp, env)
             return None
-        case Cons(Sym(None, 'if')):
-            raise SyntaxError(
-                f'something is wrong with this if: {form}', location_from(form)
-            )
 
         case Cons(Sym(None, 'fn'), Cons(Vec() as params, Cons(body, Nil()))):
             closure = extract_closure(body, params, interp, env)
@@ -2241,30 +2213,16 @@ def eval_expr(form, interp, env):
                 if compiled is not None:
                     return compiled
             return fn
-        case Cons(Sym(None, 'fn'), _):
-            raise SyntaxError(f'invalid fn form: {form}', location_from(form))
 
         case Cons(Sym(None, 'raise'), Cons(raisable_form, Nil())):
             raisable = eval_expr(raisable_form, interp, env)
             raise raisable
-        case Cons(Sym(None, 'raise')):
-            raise SyntaxError(
-                f"invalid special form 'raise': {form}", location_from(form)
-            )
 
         case Cons(Sym(None, 'quote'), Cons(arg, Nil())):
             return arg
-        case Cons(Sym(None, 'quote'), args):
-            raise SemanticError(
-                f'wrong number of arguments to quote: {len(args)}'
-            )
 
         case Cons(Sym(None, 'var'), Cons(Sym() as sym, Nil())):
             return interp.resolve_symbol(sym, env)
-        case Cons(Sym(None, 'var'), _):
-            raise SemanticError(
-                f'invalid special form var: var takes 1 symbol as argument: {form}'
-            )
 
         case Cons(proc_form, args):
             proc = eval_expr(proc_form, interp, env)
@@ -2364,14 +2322,191 @@ def validate_recur_tail(form):
     # (. non-tail x)
     # (do non-tail... tail) <- if in tail position
     # (let* [x non-tail y non-tail ... ...] tail) <- if in tail pos
-    # (loop [x non-tail y non-tail ... ...] tail) <- always
+    # (loop [x non-tail y non-tail ... ...] tail) <- resolved
     # (recur non-tail...)
     # (if non-tail tail tail) <- if in tail pos
-    # (fn [...] tail) <- always
+    # (fn [...] tail) <- resolved
     # (raise non-tail)
-    # (x non-tail...)
+    # (non-tail non-tail...)
+    # [non-tail...]
+    # {non-tail non-tail...}
 
-    pass
+    def is_recur(form):
+        match form:
+            case Cons(Special.RECUR, _): return True
+            case _: return False
+
+    def first_recur_or_none(iterable):
+        return next(filter(is_recur, iterable), None)
+
+    def err(bad_recur):
+        return SyntaxError(
+            f'recur in non-tail position: {form}', location_from(bad_recur)
+        )
+
+    # Returns 'form' if it contains a recur in a tail position
+    # This bubbles up recursively
+    match form:
+        case Cons(Special.DOT, Cons(obj, Cons(_, Nil()))):
+            if is_recur(obj):
+                raise err(obj)
+            return None
+        case Cons(Special.DO, subforms):
+            *non_tail, tail = subforms
+            if bad_recur := first_recur_or_none(non_tail):
+                raise err(bad_recur)
+            return tail
+        case Cons(Special.LETSTAR, Cons(Vec() as bindings, Cons(body, Nil()))):
+            if bad_recur := first_recur_or_none(islice(bindings, 1, None, 2)):
+                raise err(bad_recur)
+            return body
+        case Cons(Special.LOOP, Cons(Vec() as bindings, Cons(_, Nil()))):
+            if bad_recur := first_recur_or_none(islice(bindings, 1, None, 2)):
+                raise err(bad_recur)
+            # loop resolves a recur, so we return none, regardless of
+            # whether there was a recur in the body.
+            return None
+        case Cons(Special.RECUR, args):
+            if bad_recur := first_recur_or_none(args):
+                raise err(bad_recur)
+            # recur is itself a recur :)
+            return form
+        case Cons(Special.IF, Cons(pred, Cons(consequent, Cons(alt, Nil())))):
+            if is_recur(pred):
+                raise err(pred)
+            return consequent or alt
+        case Cons(Special.IF, Cons(pred, Cons(consequent, Nil()))):
+            if is_recur(pred):
+                raise err(pred)
+            return consequent
+        case Cons(Special.FN, Cons(Vec(), Cons(_, Nil()))):
+            return None  # fn is a another recursion point. i.e. the recur resolves
+        case Cons(Special.FN, Cons(Sym(), Cons(Vec(), Cons(_, Nil())))):
+            return None
+        case Cons() | Vec() as seq:
+            if bad_recur := first_recur_or_none(seq):
+                raise err(bad_recur)
+        case ArrayMap() | Map() as m:
+            if bad_recur := first_recur_or_none(untake_pairs(m.items())):
+                raise err(bad_recur)
+        case other:
+            return other
+
+
+# And simplify?
+def validate_syntax_coalg(form):
+    # Maybe we could consider simplifying two armed if here as well
+    match form:
+        case Cons(Sym(None, '.'), Cons(_, Cons(Sym(_, _), Nil()))):
+            return form
+        case Cons(Sym(None, '.'), _):
+            raise SyntaxError(f'invald member expression: {form}', location_from(form))
+        case Cons(Sym(None, 'def'), Cons(Sym(), Nil())):
+            return form
+        case Cons(Sym(None, 'def'), Cons(Sym(), Cons(_, Nil()))):
+            return form
+        case Cons(Sym(None, 'def'), _):
+            raise SyntaxError(f'invalid form def: {form}', location_from(form))
+        case Cons(Sym(None, 'let*'), Cons(Vec() as bindings, Cons(_, Nil()))):
+            if len(bindings) % 2 != 0:
+                raise SyntaxError(
+                    'uneven number of forms in let bindings', location_from(bindings)
+                )
+            for binding, init in take_pairs(bindings):
+                if not isinstance(binding, Sym) or binding.ns is not None:
+                    raise SyntaxError(
+                        f'let* does not support destructuring: problem: {binding}',
+                        location_from(binding)
+                    )
+            return form
+        case Cons(Sym(None, 'let*'), _):
+            raise SyntaxError(f"invalid let: {form}", location_from(form))
+        case Cons(Sym(None, 'loop'), Cons(Vec() as bindings, Cons(_, Nil()))):
+            if len(bindings) % 2 != 0:
+                raise SyntaxError(
+                    'uneven number of forms in loop bindings', location_from(bindings)
+                )
+            for binding, init in take_pairs(bindings):
+                if not isinstance(binding, Sym) or binding.ns is not None:
+                    raise SyntaxError(
+                        f'loop does not support destructuring: problem: {binding}',
+                        location_from(binding)
+                    )
+            return form
+        case Cons(Sym(None, 'loop'), _):
+            raise SyntaxError(f"invalid loop: {form}", location_from(form))
+        case Cons(Sym(None, 'if'), Cons(_, Cons(_, Cons(_, Nil())))):
+            return form  # two armed if
+        case Cons(Sym(None, 'if'), Cons(_, Cons(_, Nil()))):
+            return form  # one armed if
+        case Cons(Sym(None, 'if')):
+            raise SyntaxError(f'invalid if form: {form}', location_from(form))
+        case Cons(Sym(None, 'fn'), Cons(Vec() as params, Cons(_, Nil()))):
+            for param in params:
+                match param:
+                    case Sym(None, _): pass
+                    case _:
+                        raise SyntaxError(
+                            'fn params must be simple names', location_from(form)
+                        )
+            return form
+        case Cons(Sym(None, 'fn'),
+                  Cons(Sym() as name_sym, Cons(Vec() as params, Cons(_, Nil())))):
+            if name_sym.ns is not None:
+                raise SyntaxError(
+                    f'fn name not simple name: {name_sym}', location_from(name_sym)
+                )
+            for param in params:
+                match param:
+                    case Sym(None, _): pass
+                    case _:
+                        raise SyntaxError(
+                            'fn params must be simple names', location_from(form)
+                        )
+            return form
+        case Cons(Sym(None, 'fn'), _):
+            raise SyntaxError(f'invalid fn form: {form}', location_from(form))
+        case Cons(Sym(None, 'raise'), Cons(_, Nil())):
+            return form
+        case Cons(Sym(None, 'raise'), _):
+            raise SyntaxError(
+                f"invalid special form 'raise': {form}", location_from(form)
+            )
+        case Cons(Sym(None, 'quote'), Cons(arg, Nil())):
+            return form
+        case Cons(Sym(None, 'quote'), args):
+            raise SyntaxError(
+                f'wrong number of arguments to quote: {len(args)}',
+                location_from(form)
+            )
+        case Cons(Sym(None, 'var'), Cons(Sym(), Nil())):
+            return form
+        case Cons(Sym(None, 'var'), Cons(arg, Nil())):
+            arg_type = type(arg).__name__
+            raise SyntaxError(
+                f'invalid var, expected symbol, got {arg_type}: {form}',
+                location_from(form),
+            )
+        case Cons(Sym(None, 'var'), _):
+            raise SyntaxError(
+                f'invalid special form var: {form}', location_from(form)
+            )
+    return form
+
+
+def fmap_with_def(f, expr):
+    # The main fmap is only used in the compiler to compile functions
+    # where def, require and import are not allowed.
+    # Here we write a version that handles those cases.
+    match expr:
+        case Cons(Sym(None, 'def') as s, Cons(name, Cons(init, Nil()))):
+            return Cons(s, Cons(name, Cons(f(init), nil)))
+        case Cons(Sym(None, 'def'), Cons(name, Nil())):
+            return expr
+        case Cons(Sym(None, 'require' | 'import'), _):
+            return List.from_iter(tuple(map(f, expr)))
+        case other:
+            return fmap(f, other)
 
 
 def macroexpand_1(form, interp):
@@ -2507,8 +2642,9 @@ def expand_and_evaluate_forms(forms, interp):
     for form in forms:
         form0 = expand_quasi_quotes(form, interp)
         expanded, interp = macroexpand(form0, interp)
-        # TODO: validate stage
-        defined, interp = create_defs(expanded, interp)
+        validated = ana_f(fmap_with_def)(validate_syntax_coalg)(expanded)
+        _ = cata_f(fmap_with_def)(validate_recur_tail)(validated)
+        defined, interp = create_defs(validated, interp)
         result, interp = eval_top_level_form(defined, interp)
         results.append(result)
     return results, interp
