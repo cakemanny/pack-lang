@@ -1,0 +1,5 @@
+(ns tests.example)
+
+(def hello 92)
+
+;; vim:ft=clojure:

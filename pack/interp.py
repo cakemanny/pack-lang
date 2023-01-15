@@ -184,7 +184,8 @@ class Vec(Sequence):
         return (1 << (5 * self.height)) * (len(self.xs) - 1) + len(self.xs[-1])
 
     def __getitem__(self, idx: int):
-        # TODO: accept slices
+        if isinstance(idx, slice):
+            return self._slice(idx)
         if idx < 0:
             return self[len(self) + idx]
         if idx >= len(self):
@@ -198,6 +199,19 @@ class Vec(Sequence):
         mask = (1 << (5 * self.height)) - 1
 
         return self.xs[subvec_idx][mask & idx]
+
+    def _slice(self, s: slice):
+        start, stop, stride = s.indices(len(self))
+        if stride != 1:
+            return Vec.from_iter(islice(self, start, stop, stride))
+        if start >= stop:
+            return Vec.empty()
+        return SubVec(self, start, stop)
+
+    def subvec(self, start, end=None):
+        if start < 0 or start > len(self):
+            raise IndexError
+        return self._slice(slice(start, end))
 
     def __iter__(self):
         if self._is_leaf():
@@ -273,6 +287,7 @@ class Vec(Sequence):
 
     def __add__(self, other):
         if not isinstance(other, Vec):
+            return NotImplemented
             raise TypeError(
                 'can only concatenate Vec (not "%s") to Vec'
                 % (type(other).__name__)
@@ -319,6 +334,68 @@ class Vec(Sequence):
 
 
 _EMPTY_VEC = Vec((), 0)
+
+
+class SubVec(Sequence):
+
+    def __init__(self, vec, start, end):
+        if start < 0 or start >= end or end > len(vec):
+            raise IndexError
+
+        self.vec = vec
+        self.start = start
+        self.end = end
+
+    def __getitem__(self, idx):
+        if isinstance(idx, slice):
+            return self._slice(idx)
+        if idx < 0:
+            return self[len(self) + idx]
+        if idx >= len(self):
+            raise IndexError('vector index out of range')
+        return self.vec[self.start + idx]
+
+    def _slice(self, s: slice):
+        start, stop, stride = s.indices(len(self))
+        if stride != 1:
+            return Vec.from_iter(islice(self, start, stop, stride))
+        offset_slice = slice(start + self.start, stop + self.start, stride)
+        return self.vec._slice(offset_slice)
+
+    def __len__(self):
+        return self.end - self.start
+
+    # It would be sensible to think about implementing __iter__
+
+    def __repr__(self):
+        return '[' + ' '.join(map(repr, self)) + ']'
+
+    def __eq__(self, other):
+        if not isinstance(other, (Vec, SubVec)):
+            return NotImplemented
+        for x, y in zip(self, other):
+            if x != y:
+                return False
+        return True
+
+    def __radd___(self, other):
+        # Maybe there's a more efficient way to do this
+        if not isinstance(other, (Vec, SubVec)):
+            return NotImplemented
+        return Vec.from_iter(chain(
+            other, islice(self.vec, self.start, self.stop)
+        ))
+
+    def __add___(self, other):
+        # Maybe there's a more efficient way to do this
+        if not isinstance(other, (Vec, SubVec)):
+            return NotImplemented
+        return Vec.from_iter(chain(
+            islice(self.vec, self.start, self.stop), other
+        ))
+
+    def __call__(self, idx: int):
+        return self[idx]
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,6 +490,8 @@ class ArrayMap(Mapping):
         return ArrayMap(tuple(new_kvs))
 
     def dissoc(self, key):
+        # TODO: implement an efficient version when there are multiple
+        # keys to dissoc
         if key not in self.keys():
             return self
         return self.from_iter(
@@ -641,6 +720,7 @@ class Special:
     RAISE = Sym(None, 'raise')
     QUOTE = Sym(None, 'quote')
     VAR = Sym(None, 'var')
+    # Add set! ?
 
     all = {DOT, DO, DEF, LETSTAR, LOOP, RECUR, IF, FN, RAISE, QUOTE, VAR}
 
@@ -708,6 +788,8 @@ def location_from(obj):
             return from_filestring(ns)
         case Sym(_, FileString() as n):
             return from_filestring(n)
+        case PackLangError() as err:
+            return err.location
     return None
 
 
@@ -827,8 +909,8 @@ def read_str(text):
         if i == n:
             raise Unclosed('"', location_from(location_text))
 
-    segments = list(aux(text[1:]))
-    return ''.join(segments[:-1]), segments[-1]
+    *segments, remaining = aux(text[1:])
+    return ''.join(segments), remaining
 
 
 def read_comment(text):
@@ -882,7 +964,11 @@ def read_list(opener, text, closing):
         except Unmatched as unmatched:
             if unmatched.c == closing:
                 return close_sequence(opener, elements), unmatched.remaining
-            raise
+            else:
+                raise SyntaxError(
+                    f"trying to close a {opener!r} with a {unmatched.c!r}",
+                    location_from(unmatched)
+                )
 
 
 def read_quoted_like(text, macro, prefix):
@@ -1874,7 +1960,7 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
                            Cons(consequent, Nil()))):
                 return f'({consequent}) if ({predicate}) else None'
             case Cons(Sym(None, '.'), Cons(obj, Cons(attr, Nil()))):
-                return f'({obj}).{attr}'
+                return f'({obj}).{attr.n}'
             case Cons(Sym(None, 'raise'), Cons(raisable, Nil())):
                 return f'raise__({raisable})'
 
@@ -2058,7 +2144,7 @@ def eval_expr(form, interp, env):
         case None | True | False | int() | float() | str() | Keyword():
             return form
 
-        case Cons(Sym(None, '.'), Cons(obj_expr, Cons(Sym(None, attr), Nil()))):
+        case Cons(Sym(None, '.'), Cons(obj_expr, Cons(Sym(_, attr), Nil()))):
             obj = eval_expr(obj_expr, interp, env)
             return getattr(obj, attr)
         case Cons(Sym(None, '.'), _):
@@ -2211,8 +2297,6 @@ def eval_expr(form, interp, env):
                 eval_expr(sub_form, interp, env) for sub_form in vec
             )
 
-        case RTFn():
-            return form
         # These have to go at the bottom because map, vec and keyword, etc
         # implement callable as well, but we are just wanting to deal with
         # python functions here
@@ -2266,6 +2350,28 @@ def create_defs(form, interp):
 
         case other:
             return other, interp
+
+
+def validate_recur_tail(form):
+    """
+    check that recur occurs only in tail position
+    """
+    # ideas -> could have an anamorphism carrying down whether
+    # we'eve passed through an fn or a recur
+    # TODO
+
+    # Analysis
+    # (. non-tail x)
+    # (do non-tail... tail) <- if in tail position
+    # (let* [x non-tail y non-tail ... ...] tail) <- if in tail pos
+    # (loop [x non-tail y non-tail ... ...] tail) <- always
+    # (recur non-tail...)
+    # (if non-tail tail tail) <- if in tail pos
+    # (fn [...] tail) <- always
+    # (raise non-tail)
+    # (x non-tail...)
+
+    pass
 
 
 def macroexpand_1(form, interp):
@@ -2432,7 +2538,7 @@ def main():
                 results, interp = expand_and_evaluate_forms(forms, interp)
                 for result in results:
                     print(repr(result))
-            except (NotImplementedError, PackLangError) as e:
+            except PackLangError as e:
                 print(repr(e))
             except Exception:
                 traceback.print_exc()

@@ -21,6 +21,11 @@
 (def <= (. operator le))
 (def > (. operator gt))
 (def >= (. operator ge))
+(def even? (fn [n] (not ((. operator and_) n 1))))
+(def odd? (fn [n] (not (even? n))))
+
+
+(def symbol? (fn [s] ((. builtins isinstance) s (. pack.interp Sym))))
 
 ;; Data structures
 (def list (fn [& elems] elems))
@@ -28,6 +33,8 @@
 (def cons (. pack.interp Cons))
 
 (def vector (fn [& elems] ((. (. pack.interp Vec) from_iter) elems)))
+(def vector? (fn [xs] ((. builtins isinstance) xs (. pack.interp Vec))))
+(def subvec (fn [xs & start_and_stop] (apply (. xs subvec) start_and_stop)))
 (def hash-map
   (fn [& elems]
     (let* [kvs ((. pack.interp take_pairs) elems)
@@ -39,6 +46,7 @@
     (if m
       ((. m assoc) k v)
       {k v})))
+
 
 (def first (fn [xs] (. xs hd)))
 (def rest (fn [xs] (. xs tl)))
@@ -86,6 +94,16 @@
     (foldl + "" (map (. builtins str) parts))))
 
 
+;; FIXME: this needs to failover to a fold when the darn thing is iterable
+(def count
+  (fn [xs]
+    ((. builtins len) xs)))
+
+
+(def meta
+  (fn [x]
+    (. x metadata)))
+
 ;; Namespace functions
 (def ns
   (fn [ns-sym]
@@ -93,5 +111,44 @@
           `(in-ns '~ns-sym)
           (list `refer ''pack.core))))
 ((. pack.interp set_macro) (var ns))
+
+
+;; Enhance basic forms
+
+(def destructure
+  (fn [bindings]
+    (if (not (vector? bindings))
+      (raise ((. builtins SyntaxError) (str "bindings not vector: " bindings)))
+      (if (odd? (count bindings))
+        (raise ((. builtins SyntaxError) (str "odd number of bindings: " bindings)))
+        (let* [aux (fn [lhs rhs]
+                     (if (symbol? lhs)
+                       [lhs rhs]
+                       (raise ((. builtins NotImplementedError) "TODO: destructure"))))]
+         (loop [result []
+                bs bindings]
+           (if (= (count bs) 0)
+             result
+             (recur
+               (+ result (aux (bs 0) (bs 1)))
+               (subvec bs 2)))))))))
+
+(def defn
+  (fn [name bindings body]
+    `(def ~name (fn ~name ~bindings ~body))))
+((. pack.interp set_macro) (var defn))
+
+
+(defn defmacro [name bindings body]
+  `(do
+     (defn ~name ~bindings ~body)
+     ((. pack.interp set_macro) (var ~name))))
+((. pack.interp set_macro) (var defmacro))
+
+
+(defmacro let [bindings & body]
+  (let* [destructured (destructure bindings)]
+    `(let* ~destructured ~@body)))
+
 
 ;; vim:ft=clojure:

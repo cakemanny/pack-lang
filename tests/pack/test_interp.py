@@ -59,6 +59,9 @@ def test_vec():
 
     assert len(Vec.from_iter(range(32))) == 32
 
+    # calllable
+    assert Vec.from_iter(range(10))(2) == 2
+
     # Two level Vector
     assert len(Vec.from_iter(range(33))) == 33
     assert Vec.from_iter(range(33))[32] == 32
@@ -132,6 +135,55 @@ def test_vec__iter():
     assert Vec.from_iter(v) == v
 
     assert Vec.from_iter(reversed(Vec.from_iter(reversed(v)))) == v
+
+
+def test_subvec():
+
+    sv = Vec.from_iter(range(10)).subvec(2)
+    assert len(sv) == 8
+    assert sv[4] == list(sv)[4] == 6
+    assert sv[-4] == list(sv)[-4]
+    assert list(sv) == list(range(2, 10))
+    assert list(iter(sv)) == list(sv)
+
+    sv2 = Vec.from_iter([1, 2, 3, 4, 5, 6]).subvec(2, 4)
+    assert repr(sv2) == '[3 4]'
+
+    v = Vec.from_iter([0, 1, 2, 3, 4, 5])
+    assert v.subvec(0, 0) == Vec.empty()
+    assert Vec.empty() == v.subvec(0, 0)
+
+    assert v.subvec(0, 6) == v
+    assert v == v.subvec(0, 6)
+
+    assert v[2:4] == v.subvec(2, 4)
+    assert v[2:4][1:] == v.subvec(3, 4)
+    assert v[2:4][1:] == Vec.from_iter([3])
+    assert v[::2] == Vec.from_iter([0, 2, 4])
+    assert v[-2:-1] == Vec.from_iter([4])
+
+    assert len(v[100:101]) == 0
+    assert len(v[0:20]) == 6
+
+    sv = v.subvec(1, 5)
+    assert len(sv) == 4
+    assert Vec.from_iter(reversed(sv)) == Vec.from_iter([4, 3, 2, 1])
+
+    # Callable
+    assert v.subvec(2)(2) == 4
+
+
+@pytest.mark.xfail
+def test_subvec__addition():
+    # Addable
+    v = Vec.from_iter([0, 1, 2, 3, 4, 5])
+
+    assert Vec.empty() + v.subvec(1, 3) == Vec.from_iter([1, 2])
+    assert v.subvec(1, 3) + Vec.empty() == Vec.from_iter([1, 2])
+
+    assert v.subvec(2) + v.subvec(4) == Vec.from_iter([2, 3, 4, 5, 4, 5])
+    assert v.subvec(2) + v == Vec.from_iter([2, 3, 4, 5] + list(v))
+    assert v + v.subvec(2) == Vec.from_iter(list(v) + [2, 3, 4, 5])
 
 
 def test_arraymap():
@@ -337,7 +389,13 @@ def test_try_read():
     )
 
     with pytest.raises(Unmatched):
+        try_read('  )')
+
+    with pytest.raises(SyntaxError):
         try_read('[  )')
+
+    with pytest.raises(SyntaxError):
+        try_read("(let [[x y] [5 6] x)")
 
     # incomplete form
     with pytest.raises(Unclosed):
@@ -902,8 +960,8 @@ def test_expand_and_evaluate__require(initial_interpreter):
     text = """\
     (ns pack.core)
     (ns user)
-    (require 'example)
-    example/hello
+    (require 'tests.example)
+    tests.example/hello
     """
     forms = read_all_forms(text)
 
