@@ -173,7 +173,6 @@ def test_subvec():
     assert v.subvec(2)(2) == 4
 
 
-@pytest.mark.xfail
 def test_subvec__addition():
     # Addable
     v = Vec.from_iter([0, 1, 2, 3, 4, 5])

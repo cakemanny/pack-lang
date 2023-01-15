@@ -378,20 +378,20 @@ class SubVec(Sequence):
                 return False
         return True
 
-    def __radd___(self, other):
+    def __radd__(self, other):
         # Maybe there's a more efficient way to do this
         if not isinstance(other, (Vec, SubVec)):
             return NotImplemented
         return Vec.from_iter(chain(
-            other, islice(self.vec, self.start, self.stop)
+            other, islice(self.vec, self.start, self.end)
         ))
 
-    def __add___(self, other):
+    def __add__(self, other):
         # Maybe there's a more efficient way to do this
         if not isinstance(other, (Vec, SubVec)):
             return NotImplemented
         return Vec.from_iter(chain(
-            islice(self.vec, self.start, self.stop), other
+            islice(self.vec, self.start, self.end), other
         ))
 
     def __call__(self, idx: int):
