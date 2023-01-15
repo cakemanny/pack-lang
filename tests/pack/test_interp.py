@@ -1344,12 +1344,11 @@ def test_replace_letstar():
     """)[0]
 
 
-@pytest.mark.skip
 def test_replace_loop_recur():
     """
     TODO: one of the next ones to implement
     """
-    from pack.interp import cata_f, fmap_setbang, replace_loop_recur
+    from pack.interp import cata_f, fmap_setbang, create_replace_loop_recur_alg
 
     form = read_all_forms("""\
     (loop [x 2 y 3]
@@ -1358,7 +1357,8 @@ def test_replace_loop_recur():
             (recur (- x 1) (* x y))))
     """)[0]
 
-    assert cata_f(fmap_setbang)(replace_loop_recur)(form) == read_all_forms("""
+    assert cata_f(fmap_setbang)(create_replace_loop_recur_alg())(form) == \
+        read_all_forms("""\
     (do
         (set! x 2)
         (set! y 3)
@@ -1368,10 +1368,10 @@ def test_replace_loop_recur():
                     (set! __t.1 y)
                     (break))
                 (do
-                    (set! __t.2 (- x 1))
-                    (set! __t.3 (* x y))
-                    (set! x __t.2)
-                    (set! y __t.3)
+                    (set! x__t.2 (- x 1))
+                    (set! y__t.3 (* x y))
+                    (set! x x__t.2)
+                    (set! y y__t.3)
                     (continue))))
         __t.1)
     """)[0]

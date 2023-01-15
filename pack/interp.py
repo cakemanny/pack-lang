@@ -1678,6 +1678,24 @@ def reduce_expr_setbang(zero, plus, expr):
             return reduce_expr(zero, plus, other)
 
 
+def fmap_tail(f, expr):
+    """
+    A variant of fmap that only recurses into tail positions.
+    """
+    match expr:
+        case Cons(Special.DO as s, args):
+            *non_tail, tail = args  # can this be put up into the thing?
+            return Cons(s, List.from_iter(non_tail) + Cons(f(tail), nil))
+        case Cons(Special.LETSTAR as s, Cons(Vec() as bnds, Cons(body, Nil()))):
+            return Cons(s, Cons(bnds, Cons(f(body), nil)))
+        case Cons(Special.IF as s, Cons(pred, Cons(con, Cons(alt, Nil())))):
+            return Cons(s, Cons(pred, Cons(f(con), Cons(f(alt), Nil()))))
+        case Cons(Special.IF as s, Cons(pred, Cons(f(con), Nil()))):
+            return Cons(s, Cons(pred, Cons(f(con), Nil())))
+        case other:
+            return other
+
+
 def remove_vec_and_map_alg(expr):
     "replace map and vector literals with their constructors"
     match expr:
@@ -1806,7 +1824,7 @@ def create_hoist_lambda_alg(i=0):
     def next_temp():
         nonlocal i
         i += 1
-        return Sym(None, '__t.1')
+        return Sym(None, f'__t.{i}')
 
     def hoist_lambda_alg(expr):
         match expr:
@@ -1837,6 +1855,74 @@ def replace_letstar_alg(expr):
                         List.from_iter(set_bang_forms + [body]))
         case other:
             return other
+
+
+def create_replace_loop_recur_alg(i=0):
+    def next_temp(prefix=""):
+        nonlocal i
+        i += 1
+        return Sym(None, f'{prefix}__t.{i}')
+
+    def replace_tails_alg(binding_names, return_value):
+        def alg(expr):
+            match expr:
+                case Cons(Special.RECUR, args):
+                    # We have to separate out evaluation and rebinding
+                    # because the expressions may refer to each other
+                    temp_names = list(map(next_temp, binding_names))
+                    evaluation = [
+                        Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, nil)))
+                        for name_sym, init in zip(temp_names, args)
+                    ]
+                    rebinding = [
+                        Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, nil)))
+                        for name_sym, init in zip(binding_names, temp_names)
+                    ]
+                    continue_ = Cons(Sym(None, 'continue'), nil)
+                    return Cons(Special.DO,
+                                List.from_iter(evaluation + rebinding + [continue_]))
+
+                # Cases where the forms contain deeper tail expressions
+                case Cons(Special.DO | Special.LETSTAR | Special.IF, _):
+                    # recur and other tail expressions have been replaced
+                    # thanks to fmap_tail
+                    return expr
+
+                # Tail Reached: replace the result with a set!
+                case other:
+                    eval_and_assign = Cons(Sym(None, 'set!'),
+                                           Cons(return_value,
+                                                Cons(other, nil)))
+                    break_ = Cons(Sym(None, 'break'), nil)
+                    return Cons(Special.DO,
+                                Cons(eval_and_assign, Cons(break_, nil)))
+        return alg
+
+    def replace_loop_recur_alg(expr):
+        match expr:
+            case Cons(Sym(None, 'loop'),
+                      Cons(Vec() as bindings,
+                           Cons(body, Nil()))):
+                set_bang_forms = [
+                    Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, nil)))
+                    for name_sym, init in take_pairs(bindings)
+                ]
+
+                binding_names = bindings[::2]
+
+                return_value = next_temp()
+
+                alg = replace_tails_alg(binding_names, return_value)
+                new_body = Cons(Sym(None, 'while-true'),
+                                Cons(cata_f(fmap_tail)(alg)(body),
+                                     nil))
+
+                return Cons(Sym(None, 'do'),
+                            List.from_iter(set_bang_forms + [new_body, return_value]))
+            case other:
+                return other
+
+    return replace_loop_recur_alg
 
 
 def hoist_statements(expr):
@@ -2314,10 +2400,6 @@ def validate_recur_tail(form):
     """
     check that recur occurs only in tail position
     """
-    # ideas -> could have an anamorphism carrying down whether
-    # we'eve passed through an fn or a recur
-    # TODO
-
     # Analysis
     # (. non-tail x)
     # (do non-tail... tail) <- if in tail position
