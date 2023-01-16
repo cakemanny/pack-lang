@@ -6,4 +6,4 @@ test:
 
 .PHONY: lint
 lint:
-	flake8 *.py
+	flake8 pack
