@@ -33,23 +33,24 @@ class Special:
     all = {DOT, DO, DEF, LETSTAR, LOOP, RECUR, IF, FN, RAISE, QUOTE, VAR}
 
 
+def split_params(params: Vec):
+    if Fn.PARAM_SEP not in params:
+        return params, None
+    idx = params.index(Fn.PARAM_SEP)
+    new_params = tuple([params[i] for i in range(0, idx)])
+    restparam = params[idx + 1]
+    return new_params, restparam
+
+
 class Fn:
     PARAM_SEP = Sym(None, '&')
 
     def __init__(self, name, params, body, env):
         assert isinstance(params, Vec)
         self.name = name
-        self.params, self.restparam = self._split_params(params)
+        self.params, self.restparam = split_params(params)
         self.body = body
         self.env = env
-
-    def _split_params(self, params: Vec):
-        if Fn.PARAM_SEP not in params:
-            return params, None
-        idx = params.index(Fn.PARAM_SEP)
-        new_params = [params[i] for i in range(0, idx)]
-        restparam = params[idx + 1]
-        return new_params, restparam
 
     def __repr__(self):
         name = ''

@@ -1,8 +1,11 @@
+from dataclasses import dataclass
+from functools import reduce
+from typing import TypeVar, Optional
 import operator
 import traceback
-from functools import reduce
 
-from pack.ast import Special, Fn, fmap, fmap_datum, reduce_expr
+from pack.ast import Special, fmap, fmap_datum, reduce_expr, split_params
+from pack.ast import Fn as InterpFn
 from pack.data import Sym, Keyword, Vec, List, Cons, Nil, nil, Map, ArrayMap
 from pack.reader import location_from
 from pack.recursion import cata_f, ana_f, compose
@@ -110,7 +113,7 @@ def create_deduce_scope_coalg(i=0):
     def number_params(new_params_and_mapping, p):
         "to be used in a reduce"
         new_params, m = new_params_and_mapping  # Vec, Map
-        if p == Fn.PARAM_SEP:
+        if p == InterpFn.PARAM_SEP:
             return new_params.conj(p), m
         else:
             new_p = mk_new_sym(p)  # !
@@ -213,6 +216,29 @@ def replace_letstar_alg(expr):
             return other
 
 
+def nest_loop_in_recursive_fn(expr):
+
+    def contains_recur(expr):
+        # need something akin to recur_expr
+        # Need to return True recur and combine with 'or'
+        raise NotImplementedError
+
+    match expr:
+        case Cons(Sym(None, 'fn'), Cons(params, Cons(body, Nil()))):
+            # by using fmap_tail, we won't accidently traverse past
+            # deeper recurs, or into other fns
+            if cata_f(fmap_tail)(contains_recur)(body):
+
+                loop = Cons(Sym(None, 'loop'),
+                            Cons(Vec.from_iter(untake_pairs(zip(params, params))),
+                                 Cons(body, nil)))
+                return Cons(Sym(None, 'fn'),
+                            Cons(params,
+                                 Cons(loop, nil)))
+        case other:
+            return other
+
+
 def create_replace_loop_recur_alg(i=0):
     def next_temp(prefix=""):
         nonlocal i
@@ -234,6 +260,9 @@ def create_replace_loop_recur_alg(i=0):
                         Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, nil)))
                         for name_sym, init in zip(binding_names, temp_names)
                     ]
+                    # FIXME: We are not checking for conflicts
+                    # i.e. a user may have also defined a continue
+                    # ... could use 'pack.core/continue'
                     continue_ = Cons(Sym(None, 'continue'), nil)
                     return Cons(Special.DO,
                                 List.from_iter(evaluation + rebinding + [continue_]))
@@ -278,6 +307,195 @@ def create_replace_loop_recur_alg(i=0):
                 return other
 
     return replace_loop_recur_alg
+
+
+#
+# An Intermediate Representation
+#
+# It's come to the point where I am making too many mistakes, continuing
+# with these raw lisp forms. So we create concrete constructors for
+# each syntax element
+#
+E = TypeVar('E')
+S = TypeVar('S')
+
+
+@dataclass(frozen=True)
+class Attr:
+    obj: E
+    name: Sym
+
+
+@dataclass(frozen=True)
+class Do:
+    stmts: tuple[S]
+    expr: E
+
+
+@dataclass(frozen=True)
+class DoS:
+    stmts: tuple[S]
+
+
+@dataclass(frozen=True)
+class IfExpr:
+    pred: E
+    con: E
+    alt: E
+
+
+@dataclass(frozen=True)
+class IfStmt:
+    pred: E
+    con: S
+    alt: S
+
+
+@dataclass(frozen=True)
+class Fn:
+    name: Optional[Sym]
+    params: tuple[Sym]
+    restparam: Optional[Sym]
+    body: S | E
+
+
+@dataclass(frozen=True)
+class Raise:
+    e: E
+
+
+@dataclass(frozen=True)
+class Quote:
+    name: Sym
+
+
+@dataclass(frozen=True)
+class VarE:
+    name: Sym
+
+
+@dataclass(frozen=True)
+class SetBang:
+    name: Sym
+    init: E
+
+
+@dataclass(frozen=True)
+class Break:
+    pass
+
+
+@dataclass(frozen=True)
+class Continue:
+    pass
+
+
+@dataclass(frozen=True)
+class WhileTrue:
+    action: S
+
+
+# I imagine we will need to add a Return ... in order to properly
+# end if expressions that contain statement
+
+
+@dataclass(frozen=True)
+class Call:
+    proc: E
+    args: tuple[E]
+
+
+@dataclass(frozen=True)
+class Lit:
+    value: None | bool | int | float | str | Keyword
+
+
+def is_stmt(expr):
+    """
+    being a statement is not the same as containing statements
+    """
+    match expr:
+        case Raise() | SetBang() | WhileTrue() | Break() | Continue():
+            return True
+        case DoS() | IfStmt():
+            return True
+        case _: return False
+
+
+def convert_to_intermediate(expr):
+    match expr:
+        case x if x is nil:
+            return Lit(nil)
+        case None | True | False | int() | float() | str() | Keyword():
+            return Lit(expr)
+        case Cons(Sym(None, '.') as s, Cons(obj, Cons(Sym() as attr, Nil()))):
+            return Attr(obj, attr)
+        case Cons(Sym(None, 'do') as s, args):
+            *stmts, final = args
+            if is_stmt(final):
+                return DoS(tuple(args))
+            return Do(tuple(stmts), final)
+        case Cons(Sym(None, 'if') as s, Cons(pred, Cons(con, Cons(alt, Nil())))):
+            return IfExpr(pred, con, alt)
+        case Cons(Sym(None, 'if') as s, Cons(pred, Cons(con, Nil()))):
+            return IfExpr(pred, con, Lit(None))
+        case Cons(Sym(None, 'fn') as s, Cons(Vec() as params, Cons(body, Nil()))):
+            positional_params, restparam = split_params(params)
+            return Fn(None, positional_params, restparam, body)
+        case Cons(Sym(None, 'fn') as s,
+                  Cons(Sym(None, _) as n, Cons(Vec() as params, Cons(body, Nil())))):
+            positional_params, restparam = split_params(params)
+            return Fn(n, positional_params, restparam, body)
+        case Cons(Sym(None, 'raise'), Cons(r, Nil())):
+            return Raise(r)
+        case Cons(Sym(None, 'quote'), Cons(Sym() as s, Nil())):
+            return Quote(s)
+        case Cons(Sym(None, 'var'), Cons(Sym() as s, Nil())):
+            return VarE(s)
+        case Cons(Sym(None, 'set!'), Cons(Sym() as name, Cons(init, Nil()))):
+            return SetBang(name, init)
+        case Cons(Sym(None, 'break'), Nil()):
+            return Break()
+        case Cons(Sym(None, 'continue'), Nil()):
+            return Continue()
+        case Cons(Sym(None, 'while-true'), Cons(action, Nil())):
+            return WhileTrue(action)
+        case Cons(hd, tl):
+            return Call(hd, tuple(tl))
+        case Sym() as sym:
+            return sym
+        case _:
+            raise NotImplementedError(expr)
+
+
+def fmap_ir(f, expr):
+    match expr:
+        case Lit() | Quote() | VarE() | Break() | Continue() | Sym() as terminal:
+            return terminal
+        case Attr(obj, attr):
+            return Attr(f(obj), attr)
+        case Do(stmts, final):
+            return Do(tuple(map(f, stmts)), f(final))
+        case DoS(stmts, final):
+            return DoS(tuple(map(f, stmts)))
+        case IfExpr(pred, con, alt):
+            return IfExpr(f(pred), f(con), f(alt))
+        case IfStmt(pred, con, alt):
+            return IfStmt(f(pred), f(con), f(alt))
+        case IfStmt(pred, con, alt):
+            return IfStmt(f(pred), f(con), f(alt))
+        case Fn(n, params, restparam, body):
+            return Fn(n, params, restparam, f(body))
+        case Raise(r):
+            return Raise(f(r))
+        case SetBang(name, init):
+            return SetBang(name, f(init))
+        case WhileTrue(action):
+            return WhileTrue(f(action))
+        case Call(hd, tl):
+            return Call(f(hd), tuple(map(f, tl)))
+        case _:
+            raise NotImplementedError(expr)
 
 
 def create_hoist_statements(i=0):
@@ -434,7 +652,7 @@ def create_hoist_statements(i=0):
 
 
 # This is in ultra-draft idea mode at the moment
-def compile_fn(fn: Fn, interp, *, mode='func'):
+def compile_fn(fn: InterpFn, interp, *, mode='func'):
     """
     mode can be one of
     * func -> returns a python function
@@ -515,15 +733,15 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         """
 
         match expr:
-            case str() | int() | float() | bool() | None as lit:
+            case Lit(str() | int() | float() | bool() | None as lit):
                 return repr(lit)
             case Nil():
                 return 'None'
-            case Keyword(None, n):
+            case Lit(Keyword(None, n)):
                 # because of the FileString instances, we have to convert to
                 # normal strings
                 return f'__Keyword(None, {str(n)!r})'
-            case Keyword(ns, n):
+            case Lit(Keyword(ns, n)):
                 return f'__Keyword({str(ns)!r}, {str(n)!r})'
             case Sym(None, n) as sym:
                 if sym == restparam:
@@ -535,46 +753,34 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
                         return mangle_name(n) + '.value'
                 # must be a bound var
                 return mangle_name(n)
-                raise Uncompilable(f'unresolved: {n}', location_from(n))
             case Sym() as sym:
                 return mangle_name(str(sym)) + '.value'
-
-            case Cons(Sym(None, 'if'),
-                      Cons(predicate,
-                           Cons(consequent, Cons(alternative, Nil())))):
+            case IfExpr(predicate, consequent, alternative):
                 return f'({consequent}) if ({predicate}) else ({alternative})'
-            case Cons(Sym(None, 'if'),
-                      Cons(predicate,
-                           Cons(consequent, Nil()))):
-                return f'({consequent}) if ({predicate}) else None'
-            case Cons(Sym(None, '.'), Cons(obj, Cons(attr, Nil()))):
+            case Attr(obj, attr):
                 return f'({obj}).{attr.n}'
-            case Cons(Sym(None, 'raise'), Cons(raisable, Nil())):
+            case Raise(raisable):
                 return f'raise__({raisable})'
 
-            case Cons(Sym(None, 'quote'), Cons(Sym(None, n), Nil())):
+            case Quote(Sym(None, n)):
                 return f'__Sym(None, {str(n)!r})'
-            case Cons(Sym(None, 'quote'), Cons(Sym(ns, n), Nil())):
+            case Quote(Sym(ns, n)):
                 return f'__Sym({str(ns)!r}, {str(n)!r})'
 
-            case Cons(Sym(None, 'var'), Cons(Sym(None, n) as sym, Nil())):
+            case VarE(Sym(None, n) as sym):
                 if sym in closure:
                     if isinstance(closure[sym], Var):
                         return mangle_name(sym.n)
                 raise Uncompilable(f'unresolved: {n}', location_from(n))
-            case Cons(Sym(None, 'var'), Cons(Sym(ns, n) as sym, Nil())):
+            case VarE(Sym(ns, n) as sym):
                 if sym in closure:
                     if isinstance(closure[sym], Var):
                         return mangle_name(str(sym))
                 raise Uncompilable(f'unresolved: {sym}', location_from(sym))
 
-            case Cons(Sym(None, 'set!'), _):
+            case SetBang():
                 raise Uncompilable(expr)
-            case Cons(Sym(None, _) as s, args) if s in Special.all:
-                # Not yet implemented
-                raise Uncompilable(expr, location_from(expr))
-
-            case Cons(proc_form, args):
+            case Call(proc_form, args):
                 joined_args = ', '.join(args)
                 return f'({proc_form})({joined_args})'
             case _:
@@ -625,16 +831,20 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
         interp.resolve_symbol(sym, ArrayMap.empty()) for sym in used_qualifieds
     ]
 
-    prog2 = cata_f(fmap_setbang)(create_replace_loop_recur_alg(var_id_counter))(prog1)
+    # TODO: write fn recur replacement
 
-    after_transforms = prog2
+    prog2 = cata_sb(create_replace_loop_recur_alg(var_id_counter))(prog1)
+    # FIXME: this should use a different fmap, that includes while, break,
+    # and continue
+    prog3 = cata_sb(convert_to_intermediate)(prog2)
+    after_transforms = prog3
 
     body_lines = []
     try:
         if restparam is not None:
             mn = mangle_name(restparam.n)
             body_lines += [f'{mn} = __List_from_iter({mn})']
-        body_lines += ['return ' + cata_sb(compile_expr_alg)(after_transforms)]
+        body_lines += ['return ' + cata_f(fmap_ir)(compile_expr_alg)(after_transforms)]
         if mode == 'lines':
             return body_lines
         return create_fn(body_lines, resolved_qualifieds)
