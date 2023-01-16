@@ -1662,8 +1662,8 @@ def fmap_datum(f, datum):
 
 def fmap_setbang(f, expr):
     match expr:
-        case Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, Nil()))):
-            return Cons(Sym(None, 'set!'), Cons(name_sym, Cons(f(init), Nil())))
+        case Cons(Sym(None, 'set!') as s, Cons(name_sym, Cons(init, Nil()))):
+            return Cons(s, Cons(name_sym, Cons(f(init), Nil())))
         case Cons(Sym(None, 'let*'), _):
             raise ValueError('unexpected let*')
         case other:
@@ -1909,7 +1909,6 @@ def create_replace_loop_recur_alg(i=0):
                 ]
 
                 binding_names = bindings[::2]
-
                 return_value = next_temp()
 
                 alg = replace_tails_alg(binding_names, return_value)
@@ -1925,12 +1924,157 @@ def create_replace_loop_recur_alg(i=0):
     return replace_loop_recur_alg
 
 
-def hoist_statements(expr):
+def create_hoist_statements(i=0):
     """
-    (if (do ... e1) s1 s2) -> (do ... (if e2 s1 s2))
+    (1) (do s1 (do s2 e)) -> (do s1 s2 e)
+    (2) ((do s e1) e2) -> (do s (e1 e2))  # procedure call
+        (. (do s e1) n) -> (do s (. e1 n))
+        (if (do s e1) s1 s2) -> (do s (if e2 s1 s2))
+        (raise (do s e)) -> (do s (raise e))
+        (set! n (do s e)) -> (do s (set! n e))
+    (3) (e1 (do s e2)) -> (do (set! t* e1) s (t* e2))  <- applies to further
+                                                          args too
+    (4) (e1 (do s e2)) -> (do s (e1 e2)) if s,e1 commutes
+                                         e.g. e1 is a symbol or literal
+
     """
-    # TODO
-    pass
+    # Analysis
+    # (. e x) <- e +
+    # (do s... e) <- s +
+    # (do e) <- e -> e
+    # (if e e1 e2) <- e
+    # (if e s1 s2) <- s
+    # (fn [...] s) <- e
+    # (raise e) <- s
+    # (set! n e) <- s
+    # (break) <- s
+    # (continue) <- s
+    # (while-true s) <- s
+    # (e1 e2 ...) <- e
+    # e <- e
+
+    def next_temp(prefix=""):
+        nonlocal i
+        i += 1
+        return Sym(None, f'{prefix}__t.{i}')
+
+    def is_do(expr):
+        match expr:
+            case Cons(Sym(None, 'do'), _): return True
+            case _: return False
+
+    def is_stmt(expr):
+        match expr:
+            case Cons(Sym(None, 'do'), _): return True
+            case Cons(Sym(None, 'raise'), _): return True
+            case Cons(Sym(None, 'set!'), _): return True
+            case Cons(Sym(None, 'break'), _): return True
+            case Cons(Sym(None, 'continue'), _): return True
+            case Cons(Sym(None, 'while-true'), _): return True
+            case Cons(Sym(None, 'if'), Cons(_, Cons(con, Cons(alt, Nil())))):
+                return is_stmt(con) or is_stmt(alt)
+            case Cons(Sym(None, 'if'), Cons(_, Cons(con, Nil()))):
+                return is_stmt(con)
+            case _: return False
+
+    def reorder(exp, reconstruct):
+        # Pulls statements out of expr and puts them on the outside
+        # and then reconstructs expr only containing the nested expr
+        # into the place where it was broken
+        match exp:
+            case Cons(Sym(None, 'do'), args):
+                *stmts, e = args
+                return Cons(Sym(None, 'do'),
+                            List.from_iter(stmts)
+                            + Cons(reconstruct(e), nil))
+            case other:
+                return reconstruct(other)
+
+    def commutes(stmt, expr):
+        if stmt is None:
+            return True
+        match expr:
+            case Sym(): return True
+            case str() | int() | float() | bool() | None | Nil(): return True
+            case Keyword(): return True
+            case Cons(Sym(None, 'var'), _): return True
+            case Cons(Sym(None, 'quote'), _): return True
+        return False
+
+    def reorder2(exps, reconstruct):
+        def aux(exps):
+            match exps:
+                case Nil():
+                    return None, nil
+                case Cons(e1, rest):
+                    if is_do(e1):
+                        *stmts1, e1_ = e1.tl
+                        stmts1 = List.from_iter(stmts1)
+                    else:
+                        e1_ = e1
+                        stmts1 = nil
+
+                    rest_stmts, rest_exprs = aux(rest)
+
+                    if commutes(rest_stmts, e1_):
+                        return (Cons(Sym(None, 'do'),
+                                     List.from_iter(stmts1)
+                                     + List.from_iter([rest_stmts])),
+                                Cons(e1_, rest_exprs))
+                    else:
+                        t1 = next_temp()
+                        return (Cons(Sym(None, 'do'),
+                                     List.from_iter([
+                                         stmts1,
+                                         Cons(Sym(None, 'set!'),
+                                              Cons(t1, Cons(e1_, nil))),
+                                         rest_stmts,
+                                     ])),
+                                Cons(t1, rest_exprs))
+        stmt, exprs = aux(exps)
+        if stmt is None:
+            return reconstruct(exprs)
+        if is_do(stmt):
+            return Cons(stmt.hd, stmt.tl + Cons(reconstruct(exprs), nil))
+        return Cons(Sym(None, 'do'),
+                    List.from_iter([stmt, reconstruct(exprs)]))
+
+    def hoist_statements_alg(expr):
+        match expr:
+            case Cons(Sym(None, '.') as s,
+                      Cons(e1, Cons(attr, Nil()))) if is_do(e1):
+                return reorder(e1, lambda e: Cons(s, Cons(e, Cons(attr, nil))))
+            case Cons(Sym(None, '.') as s,
+                      Cons(e1, Cons(attr, Nil()))):
+                return expr
+            # This one is a bit special
+            case Cons(Sym(None, 'do') as s, args):
+                *stmts, e = args
+                if is_do(e):
+                    return Cons(s, List.from_iter(stmts) + e.tl)
+                return expr
+            case Cons(Sym(None, 'if') as s, Cons(pred, stmts)) if is_do(pred):
+                return reorder(pred, lambda pred: Cons(s, Cons(pred, stmts)))
+            case Cons(Sym(None, 'if') as s, Cons(pred, stmts)):
+                return expr
+            case Cons(Sym(None, 'raise') as s, Cons(e, Nil())) if is_do(e):
+                return reorder(e, lambda e: Cons(s, Cons(e, nil)))
+            case Cons(Sym(None, 'raise') as s, Cons(e, Nil())):
+                return expr
+            case Cons(Sym(None, 'set!') as s, Cons(name_sym, Cons(e, Nil()))) if is_do(e):
+                return reorder(e, lambda e: Cons(s, Cons(name_sym, Cons(e, Nil()))))
+            case Cons(Sym(None, 'break' | 'continue' | 'while-true'), _):
+                # TODO
+                return expr
+            case Cons(Sym(None, 'var' | 'quote'), _):
+                return expr
+            case Cons() as lst:
+                return reorder2(lst, lambda lst: lst)
+            case Cons(proc, args) if is_do(proc):
+                return reorder(proc, lambda e: Cons(e, args))
+            case other:
+                return other
+    return hoist_statements_alg
 
 
 # This is in ultra-draft idea mode at the moment
@@ -2111,8 +2255,6 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
 
     cata_sb = cata_f(fmap_setbang)
 
-    after_transforms = prog1
-
     def used_qualifieds_alg(expr):
         match expr:
             case Sym(ns, _) as sym if ns is not None:
@@ -2120,11 +2262,15 @@ def compile_fn(fn: Fn, interp, *, mode='func'):
             case other:
                 return reduce_expr_setbang(zero=(), plus=operator.add, expr=other)
 
-    used_qualifieds = cata_sb(used_qualifieds_alg)(after_transforms)
+    used_qualifieds = cata_sb(used_qualifieds_alg)(prog1)
 
     resolved_qualifieds = [
         interp.resolve_symbol(sym, ArrayMap.empty()) for sym in used_qualifieds
     ]
+
+    prog2 = cata_f(fmap_setbang)(create_replace_loop_recur_alg(var_id_counter))(prog1)
+
+    after_transforms = prog2
 
     body_lines = []
     try:
@@ -2433,7 +2579,7 @@ def validate_recur_tail(form):
             if is_recur(obj):
                 raise err(obj)
             return None
-        case Cons(Special.DO, subforms):
+        case Cons(Special.DO, subforms):  # TODO: can we put [*non_tail, tail]
             *non_tail, tail = subforms
             if bad_recur := first_recur_or_none(non_tail):
                 raise err(bad_recur)

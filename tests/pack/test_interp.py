@@ -1345,9 +1345,6 @@ def test_replace_letstar():
 
 
 def test_replace_loop_recur():
-    """
-    TODO: one of the next ones to implement
-    """
     from pack.interp import cata_f, fmap_setbang, create_replace_loop_recur_alg
 
     form = read_all_forms("""\
@@ -1375,6 +1372,91 @@ def test_replace_loop_recur():
                     (continue))))
         __t.1)
     """)[0]
+
+
+def test_hoist_statements():
+    from pack.interp import cata_f, fmap_setbang, create_hoist_statements
+
+    form = read_all_forms("""\
+    (. (do (raise s1) (raise s2) e) n)
+    """)[0]
+
+    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
+        read_all_forms("""\
+    (do (raise s1) (raise s2) (. e n))
+    """)[0]
+
+    form = read_all_forms("""\
+    (do (raise s1) (do (raise s2) e))
+    """)[0]
+
+    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
+        read_all_forms("""\
+    (do (raise s1) (raise s2) e)
+    """)[0]
+
+    form = read_all_forms("""\
+    (if (do (raise e) true) nil)
+    """)[0]
+
+    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
+        read_all_forms("""\
+    (do
+        (raise e)
+        (if true nil))
+    """)[0]
+
+    form = read_all_forms("""\
+    (raise (do (raise e) e2))
+    """)[0]
+
+    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
+        read_all_forms("""\
+    (do (raise e) (raise e2))
+    """)[0]
+
+    form = read_all_forms("""\
+    (set! n (do (raise e) nil))
+    """)[0]
+
+    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
+        read_all_forms("""\
+    (do (raise e) (set! n nil))
+    """)[0]
+
+    form = read_all_forms("""\
+    ((do (raise e) f) 1 2)
+    """)[0]
+
+    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
+        read_all_forms("""\
+    (do (raise e) (do (do nil)) (f 1 2))
+    """)[0]
+
+    form = read_all_forms("""\
+    (f (do (raise e) 1) 2)
+    """)[0]
+
+    # we will clean this up, the (do nil), etc
+    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
+        read_all_forms("""\
+    (do (do (raise e) (do nil)) (f 1 2))
+    """)[0]
+
+    if False:
+        # non-commuting statements
+
+        form = read_all_forms("""\
+        (if (if x true (do (raise e) nil)) nil)
+        """)[0]
+
+        assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
+            read_all_forms("""\
+        (do
+            (set! __t.1 (if x true (do (raise e) nil)))
+            (if __t.1
+                nil))
+        """)[0]
 
 
 def test_compiler__0(initial_interpreter):
