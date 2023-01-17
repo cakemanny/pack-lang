@@ -96,6 +96,37 @@ def test_replace_letstar():
     """)[0]
 
 
+def test_nest_loop_in_recursive_fn():
+    from pack.recursion import cata_f
+    from pack.compiler import fmap_setbang, nest_loop_in_recursive_fn_alg
+
+    form = read_all_forms("""\
+    (fn [x y]
+        (if (= x 0)
+            y
+            (recur (- x 1) (* x y))))
+    """)[0]
+
+    assert cata_f(fmap_setbang)(nest_loop_in_recursive_fn_alg)(form) == \
+        read_all_forms("""\
+    (fn [x y]
+        (loop [x x y y]
+            (if (= x 0)
+                y
+                (recur (- x 1) (* x y)))))
+    """)[0]
+
+    # Idempotency
+    form = read_all_forms("""\
+    (fn [x y]
+        (loop [x x y y]
+            (if (= x 0)
+                y
+                (recur (- x 1) (* x y)))))
+    """)[0]
+    assert cata_f(fmap_setbang)(nest_loop_in_recursive_fn_alg)(form) == form
+
+
 def test_replace_loop_recur():
     from pack.recursion import cata_f
     from pack.compiler import fmap_setbang, create_replace_loop_recur_alg

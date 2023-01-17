@@ -46,11 +46,26 @@ def fmap_tail(f, expr):
         case Cons(Special.LETSTAR as s, Cons(Vec() as bnds, Cons(body, Nil()))):
             return Cons(s, Cons(bnds, Cons(f(body), nil)))
         case Cons(Special.IF as s, Cons(pred, Cons(con, Cons(alt, Nil())))):
-            return Cons(s, Cons(pred, Cons(f(con), Cons(f(alt), Nil()))))
-        case Cons(Special.IF as s, Cons(pred, Cons(f(con), Nil()))):
-            return Cons(s, Cons(pred, Cons(f(con), Nil())))
+            return Cons(s, Cons(pred, Cons(f(con), Cons(f(alt), nil))))
+        case Cons(Special.IF as s, Cons(pred, Cons(con, Nil()))):
+            return Cons(s, Cons(pred, Cons(f(con), nil)))
         case other:
             return other
+
+
+def reduce_expr_tail(zero, plus, expr):
+    match expr:
+        case Cons(Special.DO, args):
+            *non_tail, tail = args  # can this be put up into the thing?
+            return tail
+        case Cons(Special.LETSTAR, Cons(Vec(), Cons(body, Nil()))):
+            return body
+        case Cons(Special.IF, Cons(_, Cons(con, Cons(alt, Nil())))):
+            return plus(con, alt)
+        case Cons(Special.IF, Cons(_, Cons(con, Nil()))):
+            return con
+        case _:
+            return zero
 
 
 def remove_vec_and_map_alg(expr):
@@ -216,27 +231,51 @@ def replace_letstar_alg(expr):
             return other
 
 
-def nest_loop_in_recursive_fn(expr):
-
-    def contains_recur(expr):
-        # need something akin to recur_expr
-        # Need to return True recur and combine with 'or'
-        raise NotImplementedError
-
+# In the future it might be nice to have a look at these kind of attributes and
+# see if it is possible to calculate them earlier, in an initial pass of the
+# tree.
+#
+def contains_recur_alg(expr):
     match expr:
-        case Cons(Sym(None, 'fn'), Cons(params, Cons(body, Nil()))):
-            # by using fmap_tail, we won't accidently traverse past
-            # deeper recurs, or into other fns
-            if cata_f(fmap_tail)(contains_recur)(body):
+        case Cons(Sym(None, 'recur'), _):
+            return True
+        case other:
+            return reduce_expr_tail(
+                zero=False, plus=operator.or_, expr=other
+            )
 
-                loop = Cons(Sym(None, 'loop'),
-                            Cons(Vec.from_iter(untake_pairs(zip(params, params))),
-                                 Cons(body, nil)))
-                return Cons(Sym(None, 'fn'),
-                            Cons(params,
-                                 Cons(loop, nil)))
+
+# by using fmap_tail, we won't accidently traverse past
+# deeper recurs, or into other fns
+contains_recur = cata_f(fmap_tail)(contains_recur_alg)
+
+
+def nest_loop_in_body_of_recursive_fn(params, body):
+    """
+    This is a variation on the function beneath. It exists because we
+    threw away the outer fn form in compile_fn :(
+    """
+    if contains_recur(body):
+        return Cons(Sym(None, 'loop'),
+                    Cons(Vec.from_iter(untake_pairs(zip(params, params))),
+                         Cons(body, nil)))
+    return body
+
+
+def nest_loop_in_recursive_fn_alg(expr):
+    match expr:
+        case Cons(Sym(None, 'fn'),
+                  Cons(params, Cons(body, Nil()))) if contains_recur(body):
+            loop = Cons(Sym(None, 'loop'),
+                        Cons(Vec.from_iter(untake_pairs(zip(params, params))),
+                             Cons(body, nil)))
+            return Cons(Sym(None, 'fn'),
+                        Cons(params,
+                             Cons(loop, nil)))
         case other:
             return other
+
+
 
 
 def create_replace_loop_recur_alg(i=0):
@@ -680,6 +719,7 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
         name = name.replace('-', '_MINUS_')
         name = name.replace('*', '_STAR_')
         name = name.replace('/', '_SLASH_')
+        name = name.replace('=', '_EQUAL_')
 
         if not name.isidentifier():
             raise NotImplementedError(name)
@@ -831,13 +871,15 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
         interp.resolve_symbol(sym, ArrayMap.empty()) for sym in used_qualifieds
     ]
 
-    # TODO: write fn recur replacement
-
-    prog2 = cata_sb(create_replace_loop_recur_alg(var_id_counter))(prog1)
+    prog2 = nest_loop_in_body_of_recursive_fn(params, prog1)
+    prog3 = cata_sb(compose(
+        create_replace_loop_recur_alg(var_id_counter),
+        nest_loop_in_recursive_fn_alg,
+    ))(prog2)
     # FIXME: this should use a different fmap, that includes while, break,
     # and continue
-    prog3 = cata_sb(convert_to_intermediate)(prog2)
-    after_transforms = prog3
+    prog4 = cata_sb(convert_to_intermediate)(prog3)
+    after_transforms = prog4
 
     body_lines = []
     try:
