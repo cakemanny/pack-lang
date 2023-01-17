@@ -90,8 +90,8 @@ def test_replace_letstar():
     assert cata(replace_letstar_alg)(form) == read_all_forms("""
     (do
         (do
-            (set! x 5)
-            (set! y 9)
+            (pack.core/set! x 5)
+            (pack.core/set! y 9)
             (* x y)))
     """)[0]
 
@@ -141,19 +141,19 @@ def test_replace_loop_recur():
     assert cata_f(fmap_setbang)(create_replace_loop_recur_alg())(form) == \
         read_all_forms("""\
     (do
-        (set! x 2)
-        (set! y 3)
-        (while-true
+        (pack.core/set! x 2)
+        (pack.core/set! y 3)
+        (pack.core/while-true
             (if (= x 0)
                 (do
-                    (set! __t.1 y)
-                    (break))
+                    (pack.core/set! __t.1 y)
+                    (pack.core/break))
                 (do
-                    (set! x__t.2 (- x 1))
-                    (set! y__t.3 (* x y))
-                    (set! x x__t.2)
-                    (set! y y__t.3)
-                    (continue))))
+                    (pack.core/set! x__t.2 (- x 1))
+                    (pack.core/set! y__t.3 (* x y))
+                    (pack.core/set! x x__t.2)
+                    (pack.core/set! y y__t.3)
+                    (pack.core/continue))))
         __t.1)
     """)[0]
 
@@ -201,12 +201,12 @@ def test_hoist_statements():
     """)[0]
 
     form = read_all_forms("""\
-    (set! n (do (raise e) nil))
+    (pack.core/set! n (do (raise e) nil))
     """)[0]
 
     assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
         read_all_forms("""\
-    (do (raise e) (set! n nil))
+    (do (raise e) (pack.core/set! n nil))
     """)[0]
 
     form = read_all_forms("""\
@@ -238,7 +238,7 @@ def test_hoist_statements():
         assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
             read_all_forms("""\
         (do
-            (set! __t.1 (if x true (do (raise e) nil)))
+            (pack.core/set! __t.1 (if x true (do (raise e) nil)))
             (if __t.1
                 nil))
         """)[0]

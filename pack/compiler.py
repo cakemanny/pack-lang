@@ -19,7 +19,7 @@ from pack.util import take_pairs, untake_pairs
 
 def fmap_setbang(f, expr):
     match expr:
-        case Cons(Sym(None, 'set!') as s, Cons(name_sym, Cons(init, Nil()))):
+        case Cons(Sym('pack.core', 'set!') as s, Cons(name_sym, Cons(init, Nil()))):
             return Cons(s, Cons(name_sym, Cons(f(init), Nil())))
         case Cons(Sym(None, 'let*'), _):
             raise ValueError('unexpected let*')
@@ -29,7 +29,7 @@ def fmap_setbang(f, expr):
 
 def reduce_expr_setbang(zero, plus, expr):
     match expr:
-        case Cons(Sym(None, 'set!'), Cons(_, Cons(init, Nil()))):
+        case Cons(Sym('pack.core', 'set!'), Cons(_, Cons(init, Nil()))):
             return init
         case other:
             return reduce_expr(zero, plus, other)
@@ -222,7 +222,7 @@ def replace_letstar_alg(expr):
                   Cons(Vec() as bindings,
                        Cons(body, Nil()))):
             set_bang_forms = [
-                Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, nil)))
+                Cons(Sym('pack.core', 'set!'), Cons(name_sym, Cons(init, nil)))
                 for name_sym, init in take_pairs(bindings)
             ]
             return Cons(Sym(None, 'do'),
@@ -276,8 +276,6 @@ def nest_loop_in_recursive_fn_alg(expr):
             return other
 
 
-
-
 def create_replace_loop_recur_alg(i=0):
     def next_temp(prefix=""):
         nonlocal i
@@ -292,17 +290,14 @@ def create_replace_loop_recur_alg(i=0):
                     # because the expressions may refer to each other
                     temp_names = list(map(next_temp, binding_names))
                     evaluation = [
-                        Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, nil)))
+                        Cons(Sym('pack.core', 'set!'), Cons(name_sym, Cons(init, nil)))
                         for name_sym, init in zip(temp_names, args)
                     ]
                     rebinding = [
-                        Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, nil)))
+                        Cons(Sym('pack.core', 'set!'), Cons(name_sym, Cons(init, nil)))
                         for name_sym, init in zip(binding_names, temp_names)
                     ]
-                    # FIXME: We are not checking for conflicts
-                    # i.e. a user may have also defined a continue
-                    # ... could use 'pack.core/continue'
-                    continue_ = Cons(Sym(None, 'continue'), nil)
+                    continue_ = Cons(Sym('pack.core', 'continue'), nil)
                     return Cons(Special.DO,
                                 List.from_iter(evaluation + rebinding + [continue_]))
 
@@ -314,10 +309,10 @@ def create_replace_loop_recur_alg(i=0):
 
                 # Tail Reached: replace the result with a set!
                 case other:
-                    eval_and_assign = Cons(Sym(None, 'set!'),
+                    eval_and_assign = Cons(Sym('pack.core', 'set!'),
                                            Cons(return_value,
                                                 Cons(other, nil)))
-                    break_ = Cons(Sym(None, 'break'), nil)
+                    break_ = Cons(Sym('pack.core', 'break'), nil)
                     return Cons(Special.DO,
                                 Cons(eval_and_assign, Cons(break_, nil)))
         return alg
@@ -328,7 +323,7 @@ def create_replace_loop_recur_alg(i=0):
                       Cons(Vec() as bindings,
                            Cons(body, Nil()))):
                 set_bang_forms = [
-                    Cons(Sym(None, 'set!'), Cons(name_sym, Cons(init, nil)))
+                    Cons(Sym('pack.core', 'set!'), Cons(name_sym, Cons(init, nil)))
                     for name_sym, init in take_pairs(bindings)
                 ]
 
@@ -336,7 +331,7 @@ def create_replace_loop_recur_alg(i=0):
                 return_value = next_temp()
 
                 alg = replace_tails_alg(binding_names, return_value)
-                new_body = Cons(Sym(None, 'while-true'),
+                new_body = Cons(Sym('pack.core', 'while-true'),
                                 Cons(cata_f(fmap_tail)(alg)(body),
                                      nil))
 
@@ -491,13 +486,13 @@ def convert_to_intermediate(expr):
             return Quote(s)
         case Cons(Sym(None, 'var'), Cons(Sym() as s, Nil())):
             return VarE(s)
-        case Cons(Sym(None, 'set!'), Cons(Sym() as name, Cons(init, Nil()))):
+        case Cons(Sym('pack.core', 'set!'), Cons(Sym() as name, Cons(init, Nil()))):
             return SetBang(name, init)
-        case Cons(Sym(None, 'break'), Nil()):
+        case Cons(Sym('pack.core', 'break'), Nil()):
             return Break()
-        case Cons(Sym(None, 'continue'), Nil()):
+        case Cons(Sym('pack.core', 'continue'), Nil()):
             return Continue()
-        case Cons(Sym(None, 'while-true'), Cons(action, Nil())):
+        case Cons(Sym('pack.core', 'while-true'), Cons(action, Nil())):
             return WhileTrue(action)
         case Cons(hd, tl):
             return Call(hd, tuple(tl))
@@ -580,10 +575,10 @@ def create_hoist_statements(i=0):
         match expr:
             case Cons(Sym(None, 'do'), _): return True
             case Cons(Sym(None, 'raise'), _): return True
-            case Cons(Sym(None, 'set!'), _): return True
-            case Cons(Sym(None, 'break'), _): return True
-            case Cons(Sym(None, 'continue'), _): return True
-            case Cons(Sym(None, 'while-true'), _): return True
+            case Cons(Sym('pack.core', 'set!'), _): return True
+            case Cons(Sym('pack.core', 'break'), _): return True
+            case Cons(Sym('pack.core', 'continue'), _): return True
+            case Cons(Sym('pack.core', 'while-true'), _): return True
             case Cons(Sym(None, 'if'), Cons(_, Cons(con, Cons(alt, Nil())))):
                 return is_stmt(con) or is_stmt(alt)
             case Cons(Sym(None, 'if'), Cons(_, Cons(con, Nil()))):
@@ -639,7 +634,7 @@ def create_hoist_statements(i=0):
                         return (Cons(Sym(None, 'do'),
                                      List.from_iter([
                                          stmts1,
-                                         Cons(Sym(None, 'set!'),
+                                         Cons(Sym('pack.core', 'set!'),
                                               Cons(t1, Cons(e1_, nil))),
                                          rest_stmts,
                                      ])),
@@ -674,9 +669,10 @@ def create_hoist_statements(i=0):
                 return reorder(e, lambda e: Cons(s, Cons(e, nil)))
             case Cons(Sym(None, 'raise') as s, Cons(e, Nil())):
                 return expr
-            case Cons(Sym(None, 'set!') as s, Cons(name_sym, Cons(e, Nil()))) if is_do(e):
+            case Cons(Sym('pack.core', 'set!') as s,
+                      Cons(name_sym, Cons(e, Nil()))) if is_do(e):
                 return reorder(e, lambda e: Cons(s, Cons(name_sym, Cons(e, Nil()))))
-            case Cons(Sym(None, 'break' | 'continue' | 'while-true'), _):
+            case Cons(Sym('pack.core', 'break' | 'continue' | 'while-true'), _):
                 # TODO
                 return expr
             case Cons(Sym(None, 'var' | 'quote'), _):
@@ -760,7 +756,7 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
 
     def compile_statement_alg(expr):
         match expr:
-            case Cons(Sym(None, 'set!'), Cons(name, Cons(init, Nil()))):
+            case Cons(Sym('pack.core', 'set!'), Cons(name, Cons(init, Nil()))):
                 return [f'{name} = {init}']
         assert False, "TODO"
 
