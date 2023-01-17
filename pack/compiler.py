@@ -27,10 +27,14 @@ class IR1:
 
 def fmap_setbang(f, expr):
     match expr:
-        case Cons(IR1.SETBANG as s, Cons(name_sym, Cons(init, Nil()))):
-            return Cons(s, Cons(name_sym, Cons(f(init), Nil())))
+        case Cons(IR1.SETBANG, Cons(name_sym, Cons(init, Nil()))):
+            return Cons(IR1.SETBANG, Cons(name_sym, Cons(f(init), Nil())))
         case Cons(Sym(None, 'let*'), _):
             raise ValueError('unexpected let*')
+        case Cons(IR1.WHILE_TRUE, Cons(action, Nil())):
+            return Cons(IR1.WHILE_TRUE, Cons(f(action), nil))
+        case Cons(IR1.BREAK | IR1.CONTINUE, Nil()):
+            return expr
         case other:
             return fmap(f, other)
 
@@ -39,6 +43,10 @@ def reduce_expr_setbang(zero, plus, expr):
     match expr:
         case Cons(IR1.SETBANG, Cons(_, Cons(init, Nil()))):
             return init
+        case Cons(IR1.WHILE_TRUE, Cons(action, Nil())):
+            return action
+        case Cons(IR1.BREAK | IR1.CONTINUE, Nil()):
+            return zero
         case other:
             return reduce_expr(zero, plus, other)
 
@@ -877,13 +885,11 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
 
     prog2 = nest_loop_in_body_of_recursive_fn(params, prog1)
     prog3 = cata_sb(compose(
+        convert_to_intermediate,
         create_replace_loop_recur_alg(var_id_counter),
         nest_loop_in_recursive_fn_alg,
     ))(prog2)
-    # FIXME: this should use a different fmap, that includes while, break,
-    # and continue
-    prog4 = cata_sb(convert_to_intermediate)(prog3)
-    after_transforms = prog4
+    after_transforms = prog3
 
     body_lines = []
     try:
