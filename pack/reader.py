@@ -154,10 +154,7 @@ def read_str(text):
     # reference to text for producing error locations
     location_text = text
 
-    escapes = {
-        'a': '\a', 'b': '\b', 'f': '\f', 'r': '\r', 'n': '\n',
-        't': '\t', 'v': '\v'
-    }
+    escapes = {'b': '\b', 'r': '\r', 'n': '\n', 't': '\t'}
 
     def aux(text):
         seg_start = 0
