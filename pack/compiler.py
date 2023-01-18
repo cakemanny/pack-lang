@@ -582,121 +582,96 @@ def create_hoist_statements(i=0):
         i += 1
         return Sym(None, f'{prefix}__t.{i}')
 
-    def is_do(expr):
-        match expr:
-            case Cons(Sym(None, 'do'), _): return True
-            case _: return False
-
-    def is_stmt(expr):
-        match expr:
-            case Cons(Sym(None, 'do'), _): return True
-            case Cons(Sym(None, 'raise'), _): return True
-            case Cons(IR1.SETBANG, _): return True
-            case Cons(IR1.BREAK, _): return True
-            case Cons(IR1.CONTINUE, _): return True
-            case Cons(IR1.WHILE_TRUE, _): return True
-            case Cons(Sym(None, 'if'), Cons(_, Cons(con, Cons(alt, Nil())))):
-                return is_stmt(con) or is_stmt(alt)
-            case Cons(Sym(None, 'if'), Cons(_, Cons(con, Nil()))):
-                return is_stmt(con)
-            case _: return False
-
-    def reorder(exp, reconstruct):
+    def reorder_do(exp, reconstruct):
         # Pulls statements out of expr and puts them on the outside
         # and then reconstructs expr only containing the nested expr
         # into the place where it was broken
         match exp:
-            case Cons(Sym(None, 'do'), args):
-                *stmts, e = args
-                return Cons(Sym(None, 'do'),
-                            List.from_iter(stmts)
-                            + Cons(reconstruct(e), nil))
+            case Do(stmts, e):
+                return Do(stmts, reconstruct(e))
             case other:
                 return reconstruct(other)
 
     def commutes(stmt, expr):
-        if stmt is None:
-            return True
+        match stmt:
+            case Lit(): return True
         match expr:
-            case Sym(): return True
-            case str() | int() | float() | bool() | None | Nil(): return True
-            case Keyword(): return True
-            case Cons(Sym(None, 'var'), _): return True
-            case Cons(Sym(None, 'quote'), _): return True
+            case Sym() | Lit() | VarE() | Quote(): return True
         return False
 
-    def reorder2(exps, reconstruct):
-        def aux(exps):
-            match exps:
-                case Nil():
-                    return None, nil
-                case Cons(e1, rest):
-                    if is_do(e1):
-                        *stmts1, e1_ = e1.tl
-                        stmts1 = List.from_iter(stmts1)
-                    else:
-                        e1_ = e1
-                        stmts1 = nil
+    def seq(stmt1, stmt2):
+        match (stmt1, stmt2):
+            case (DoS(()), _): return stmt2
+            case (_, DoS(())): return stmt1
+            case (DoS(ss1), DoS(ss2)): return DoS(ss1 + ss2)
+            case (DoS(ss1), stmt2): return DoS(ss1 + (stmt2,))
+            case (ss1, DoS(ss2)): return DoS((ss1,) + stmt2)
+            case (ss1, ss2): return DoS((ss1, stmt2,))
+        assert False
 
-                    rest_stmts, rest_exprs = aux(rest)
+    def reorder(exps):
+        match exps:
+            case Nil():
+                return DoS(()), nil
+            case Cons(Do(stmts1_, e1), rest):
+                stmts1 = DoS(stmts1_)
+            case Cons(e1, rest):
+                stmts1 = DoS(())
 
-                    if commutes(rest_stmts, e1_):
-                        return (Cons(Sym(None, 'do'),
-                                     List.from_iter(stmts1)
-                                     + List.from_iter([rest_stmts])),
-                                Cons(e1_, rest_exprs))
-                    else:
-                        t1 = next_temp()
-                        return (Cons(Sym(None, 'do'),
-                                     List.from_iter([
-                                         stmts1,
-                                         Cons(IR1.SETBANG,
-                                              Cons(t1, Cons(e1_, nil))),
-                                         rest_stmts,
-                                     ])),
-                                Cons(t1, rest_exprs))
-        stmt, exprs = aux(exps)
-        if stmt is None:
+        rest_stmts, rest_exprs = reorder(rest)
+
+        if commutes(rest_stmts, e1):
+            return (seq(stmts1, rest_stmts),
+                    Cons(e1, rest_exprs))
+        else:
+            t1 = next_temp()
+            return (seq(stmts1,
+                        seq(SetBang(t1, e1),
+                            rest_stmts)),
+                    Cons(t1, rest_exprs))
+
+    def reorder_expr(exps, reconstruct):
+        stmt, exprs = reorder(exps)
+        if stmt == Lit(None):
             return reconstruct(exprs)
-        if is_do(stmt):
-            return Cons(stmt.hd, stmt.tl + Cons(reconstruct(exprs), nil))
-        return Cons(Sym(None, 'do'),
-                    List.from_iter([stmt, reconstruct(exprs)]))
+        if isinstance(stmt, DoS):
+            return Do(stmt.stmts, reconstruct(exprs))
+        return Do((stmt,), reconstruct(exprs))
+
+    def reorder_stmt(exps, reconstruct):
+        stmt, exprs = reorder(exps)
+        return seq(stmt, reconstruct(exprs))
+
+    def reorder_e1(e, reconstruct):
+        return reorder_expr(Cons(e, nil), lambda el: reconstruct(el.hd))
 
     def hoist_statements_alg(expr):
         match expr:
-            case Cons(Sym(None, '.') as s,
-                      Cons(e1, Cons(attr, Nil()))) if is_do(e1):
-                return reorder(e1, lambda e: Cons(s, Cons(e, Cons(attr, nil))))
-            case Cons(Sym(None, '.') as s,
-                      Cons(e1, Cons(attr, Nil()))):
-                return expr
+            case Attr(e1, attr):
+                return reorder_e1(e1, lambda e: Attr(e, attr))
             # This one is a bit special
-            case Cons(Sym(None, 'do') as s, args):
-                *stmts, e = args
-                if is_do(e):
-                    return Cons(s, List.from_iter(stmts) + e.tl)
-                return expr
-            case Cons(Sym(None, 'if') as s, Cons(pred, stmts)) if is_do(pred):
-                return reorder(pred, lambda pred: Cons(s, Cons(pred, stmts)))
-            case Cons(Sym(None, 'if') as s, Cons(pred, stmts)):
-                return expr
-            case Cons(Sym(None, 'raise') as s, Cons(e, Nil())) if is_do(e):
-                return reorder(e, lambda e: Cons(s, Cons(e, nil)))
-            case Cons(Sym(None, 'raise') as s, Cons(e, Nil())):
-                return expr
-            case Cons(IR1.SETBANG as s,
-                      Cons(name_sym, Cons(e, Nil()))) if is_do(e):
-                return reorder(e, lambda e: Cons(s, Cons(name_sym, Cons(e, Nil()))))
-            case Cons(Sym('pack.core', 'break' | 'continue' | 'while-true'), _):
+            case Do(stmts, Do(stmts2, e)):
+                return Do(stmts + stmts2, e)
+            case IfExpr(pred, con, alt):
+                return reorder_e1(pred, lambda p: IfExpr(p, con, alt))
+
+            case Raise(e):
+                return reorder_stmt(Cons(e, nil), lambda el: Raise(el.hd))
+            case SetBang(name, init):
+                return reorder_stmt(Cons(init, nil), lambda el: SetBang(name, el.hd))
+
+            case Break() | Continue() | WhileTrue(_):
                 # TODO
                 return expr
-            case Cons(Sym(None, 'var' | 'quote'), _):
+            case VarE() | Quote() | Lit():
                 return expr
-            case Cons() as lst:
-                return reorder2(lst, lambda lst: lst)
-            case Cons(proc, args) if is_do(proc):
-                return reorder(proc, lambda e: Cons(e, args))
+            case Call(proc, args):
+                def reconstruct(expr_list):
+                    proc, *args = expr_list
+                    return Call(proc, tuple(args))
+                return reorder_expr(Cons(proc, List.from_iter(args)), reconstruct)
+            case Call(Do() as proc, args):
+                return reorder_do(proc, lambda e: Call(e, args))
             case other:
                 return other
     return hoist_statements_alg

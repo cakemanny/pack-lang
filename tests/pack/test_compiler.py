@@ -158,90 +158,95 @@ def test_replace_loop_recur():
     """)[0]
 
 
+def read_and_convert(text):
+    from pack.compiler import fmap_setbang, convert_to_intermediate, cata_f
+
+    form = read_all_forms(text)[0]
+    return cata_f(fmap_setbang)(convert_to_intermediate)(form)
+
+
 def test_hoist_statements():
     from pack.recursion import cata_f
-    from pack.compiler import fmap_setbang, create_hoist_statements
+    from pack.compiler import fmap_ir, create_hoist_statements
 
-    form = read_all_forms("""\
+    form = read_and_convert("""\
     (. (do (raise s1) (raise s2) e) n)
-    """)[0]
+    """)
 
-    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
-        read_all_forms("""\
+    assert cata_f(fmap_ir)(create_hoist_statements())(form) == \
+        read_and_convert("""\
     (do (raise s1) (raise s2) (. e n))
-    """)[0]
+    """)
 
-    form = read_all_forms("""\
+    form = read_and_convert("""\
     (do (raise s1) (do (raise s2) e))
-    """)[0]
+    """)
 
-    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
-        read_all_forms("""\
+    assert cata_f(fmap_ir)(create_hoist_statements())(form) == \
+        read_and_convert("""\
     (do (raise s1) (raise s2) e)
-    """)[0]
+    """)
 
-    form = read_all_forms("""\
+    form = read_and_convert("""\
     (if (do (raise e) true) nil)
-    """)[0]
+    """)
 
-    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
-        read_all_forms("""\
+    assert cata_f(fmap_ir)(create_hoist_statements())(form) == \
+        read_and_convert("""\
     (do
         (raise e)
         (if true nil))
-    """)[0]
+    """)
 
-    form = read_all_forms("""\
+    # Goes from do expr inside to do statement outside
+    form = read_and_convert("""\
     (raise (do (raise e) e2))
-    """)[0]
-
-    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
-        read_all_forms("""\
+    """)
+    assert cata_f(fmap_ir)(create_hoist_statements())(form) == \
+        read_and_convert("""\
     (do (raise e) (raise e2))
-    """)[0]
+    """)
 
-    form = read_all_forms("""\
+    form = read_and_convert("""\
     (pack.core/set! n (do (raise e) nil))
-    """)[0]
-
-    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
-        read_all_forms("""\
+    """)
+    assert cata_f(fmap_ir)(create_hoist_statements())(form) == \
+        read_and_convert("""\
     (do (raise e) (pack.core/set! n nil))
-    """)[0]
+    """)
 
-    form = read_all_forms("""\
+    # Mess mess mess
+    form = read_and_convert("""\
     ((do (raise e) f) 1 2)
-    """)[0]
+    """)
+    assert cata_f(fmap_ir)(create_hoist_statements())(form) == \
+        read_and_convert("""\
+    (do (raise e) (f 1 2))
+    """)
 
-    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
-        read_all_forms("""\
-    (do (raise e) (do (do nil)) (f 1 2))
-    """)[0]
-
-    form = read_all_forms("""\
+    form = read_and_convert("""\
     (f (do (raise e) 1) 2)
-    """)[0]
+    """)
 
     # we will clean this up, the (do nil), etc
-    assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
-        read_all_forms("""\
-    (do (do (raise e) (do nil)) (f 1 2))
-    """)[0]
+    assert cata_f(fmap_ir)(create_hoist_statements())(form) == \
+        read_and_convert("""\
+    (do (raise e) (f 1 2))
+    """)
 
-    if False:
-        # non-commuting statements
+    # non-commuting statements
 
-        form = read_all_forms("""\
-        (if (if x true (do (raise e) nil)) nil)
-        """)[0]
+    form = read_and_convert("""\
+    (if (if x true (do (raise e) nil)) nil)
+    """)
 
-        assert cata_f(fmap_setbang)(create_hoist_statements())(form) == \
-            read_all_forms("""\
-        (do
-            (pack.core/set! __t.1 (if x true (do (raise e) nil)))
-            (if __t.1
-                nil))
-        """)[0]
+    assert cata_f(fmap_ir)(create_hoist_statements())(form) == \
+        read_and_convert("""\
+    (do
+        (pack.core/set! __t.1 (if x true (do (raise e) nil)))
+        (if __t.1
+            nil))
+    """)
 
 
 def test_compiler__0(initial_interpreter):
