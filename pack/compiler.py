@@ -452,8 +452,9 @@ class WhileTrue:
     action: S
 
 
-# I imagine we will need to add a Return ... in order to properly
-# end if expressions that contain statement
+@dataclass(frozen=True)
+class Return:
+    value: E
 
 
 @dataclass(frozen=True)
@@ -472,7 +473,7 @@ def is_stmt(expr):
     being a statement is not the same as containing statements
     """
     match expr:
-        case Raise() | SetBang() | WhileTrue() | Break() | Continue():
+        case Raise() | SetBang() | WhileTrue() | Break() | Continue() | Return():
             return True
         case DoS() | IfStmt():
             return True
@@ -551,6 +552,8 @@ def fmap_ir(f, expr):
             return WhileTrue(f(action))
         case Call(hd, tl):
             return Call(f(hd), tuple(map(f, tl)))
+        case Return(e):
+            return Return(f(e))
         case _:
             raise NotImplementedError(expr)
 
@@ -577,6 +580,8 @@ def reduce_ir(zero, plus, expr):
             return action
         case Call(proc, args):
             return plus(proc, reduce(plus, args, zero))
+        case Return(e):
+            return e
         case _:
             raise NotImplementedError(expr)
 
@@ -721,6 +726,8 @@ def create_hoist_statements(i=0):
                 return reorder_stmt(Cons(pred, nil), lambda el: IfStmt(el.hd, con, alt))
             case Raise(e):
                 return reorder_stmt(Cons(e, nil), lambda el: Raise(el.hd))
+            case Return(e):
+                return reorder_stmt(Cons(e, nil), lambda el: Return(el.hd))
             case SetBang(name, init):
                 return reorder_stmt(Cons(init, nil), lambda el: SetBang(name, el.hd))
 
@@ -747,6 +754,24 @@ def clean_empty_do_expr_alg(expr):
     match expr:
         case Do((), e): return e
         case other: return other
+
+
+def place_return_alg(expr):
+    match expr:
+        case Fn(name, params, restparam, body):
+            return Fn(name, params, restparam, place_return_outer(body))
+        case other:
+            return other
+
+
+def place_return_outer(fn_body):
+    match fn_body:
+        case Do(stmts, e):
+            return DoS(stmts + (Return(e),))
+        case body if not is_stmt(body):
+            return Return(body)
+        case other:
+            return other
 
 
 # This is in ultra-draft idea mode at the moment
@@ -852,6 +877,16 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
             case Attr(obj, attr):
                 return f'({obj}).{attr.n}'
 
+            # fn will always be in a set!
+            case Fn(_, _params, _restparam, _body):
+                return expr
+            case SetBang(Sym(None, n), Fn(_, _params, _restparam, _body)):
+                args = ', '.join(mangle_name(p.n) for p in _params)
+                if _restparam is not None:
+                    args = f'{args}, *{mangle_name(_restparam.n)}'
+                body_lines = [f'  {line}' for line in _body]
+                return [f'def {mangle_name(n)}({args}):', *body_lines]
+
             case Quote(Sym(None, n)):
                 return f'__Sym(None, {str(n)!r})'
             case Quote(Sym(ns, n)):
@@ -882,6 +917,14 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
                 return [f'{mangle_name(n)} = ({init})']
             case Raise(raisable):
                 return [f'raise ({raisable})']
+            case Return(e):
+                return [f'return {e}']
+            # case WhileTrue(action_lines):
+            #     return [f'  {line}' for line in action_lines]
+            # case Break():
+            #     return ['break']
+            # case Continue():
+            #     return ['continue']
             case DoS(stmts):
                 return reduce(operator.add, stmts, [])
             case Do(stmts, final):  # this is kinda wrong
@@ -947,11 +990,12 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
 
     cata_ir = cata_f(fmap_ir)
     prog4 = cata_ir(compose(
+        place_return_alg,
         clean_empty_do_expr_alg,
         create_hoist_statements(var_id_counter),
         convert_if_expr_to_stmt(var_id_counter),
     ))(prog3)
-    after_transforms = prog4
+    after_transforms = place_return_outer(prog4)
 
     body_lines = []
     try:
@@ -960,10 +1004,9 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
             body_lines += [f'{mn} = __List_from_iter({mn})']
         match cata_ir(compile_expr_alg)(after_transforms):
             case str(result):
-                body_lines += ['return ' + result]
+                body_lines += [result]
             case list(lines) if lines:
                 body_lines += lines
-                body_lines[-1] = 'return ' + body_lines[-1]
             case _: assert False
         if mode == 'lines':
             return body_lines

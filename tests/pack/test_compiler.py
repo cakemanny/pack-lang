@@ -455,6 +455,41 @@ def test_compiler__quoted_data(
     assert lines == expected_lines
 
 
+@pytest.mark.parametrize('fn_txt,expected_lines', [
+    ('(fn [] (fn [] 1))',
+     [
+         "def __t_DOT_1():",
+         "  return 1",
+         "return __t_DOT_1",
+     ]),
+    ('(fn [] (fn [x] x))',
+     [
+         "def __t_DOT_2(x_DOT_1):",
+         "  return x_DOT_1",
+         "return __t_DOT_2",
+     ]),
+])
+def test_compiler__nested_functions(
+        fn_txt, expected_lines, initial_interpreter
+):
+    from pack.interp import compile_fn
+
+    text = f"""\
+    (require 'pack.core)
+    (ns user)
+    {fn_txt}
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+    assert results[-1] == Any(Fn)
+
+    fn = results[-1]
+    lines = compile_fn(fn, interp, mode='lines')
+
+    assert lines == expected_lines
+
+
 @pytest.mark.parametrize('fn_txt,expected_result', [
     ('((fn f [] [1 2 3 4]))',
      Vec.from_iter((1, 2, 3, 4,))),
