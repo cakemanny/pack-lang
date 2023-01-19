@@ -173,7 +173,7 @@ class RTFn:
     def __init__(self, func):
         self.func = func
 
-    def __call__(self, interp, *args) -> (Any, Interpreter):
+    def __call__(self, interp, *args) -> tuple[Any, Interpreter]:
         if not isinstance(interp, Interpreter):
             raise TypeError('first argument must be an Interpreter')
         return self.func(interp, *args)

@@ -162,7 +162,7 @@ class Vec(Sequence):
     """
     A Trie with at most 32 elements in each node
     """
-    xs: tuple[Any | 'Vec']
+    xs: tuple[Any | 'Vec', ...]
     height: int
 
     # A classic sign that this should be split into two different
@@ -178,7 +178,7 @@ class Vec(Sequence):
         # final subnode
         return (1 << (5 * self.height)) * (len(self.xs) - 1) + len(self.xs[-1])
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int | slice):
         if isinstance(idx, slice):
             return self._slice(idx)
         if idx < 0:
@@ -341,7 +341,7 @@ class SubVec(Sequence):
         self.start = start
         self.end = end
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int | slice):
         if isinstance(idx, slice):
             return self._slice(idx)
         if idx < 0:
@@ -694,5 +694,5 @@ class Map(Mapping):
 
 
 _EMPTY_MAP = Map(
-    tuple([None] * 32), kindset=0, _len=0, height=7
+    tuple([None] * 32), kindset=0, _len=0, height=6
 )

@@ -23,6 +23,9 @@ class IR1:
     WHILE_TRUE = Sym('pack.core', 'while-true')
     BREAK = Sym('pack.core', 'break')
     CONTINUE = Sym('pack.core', 'continue')
+    # This does not really occur in IR1, but it's useful for
+    # being able to conver from, to make tests more readable
+    IF_STMT = Sym('pack.core', 'if-stmt')
 
 
 def fmap_setbang(f, expr):
@@ -35,6 +38,8 @@ def fmap_setbang(f, expr):
             return Cons(IR1.WHILE_TRUE, Cons(f(action), nil))
         case Cons(IR1.BREAK | IR1.CONTINUE, Nil()):
             return expr
+        case Cons(IR1.IF_STMT, Cons(pred, Cons(con, Cons(alt, Nil())))):
+            return Cons(IR1.IF_STMT, Cons(f(pred), Cons(f(con), Cons(f(alt), nil))))
         case other:
             return fmap(f, other)
 
@@ -47,6 +52,8 @@ def reduce_expr_setbang(zero, plus, expr):
             return action
         case Cons(IR1.BREAK | IR1.CONTINUE, Nil()):
             return zero
+        case Cons(IR1.IF_STMT, Cons(pred, Cons(con, Cons(alt, Nil())))):
+            return plus(plus(pred, con), alt)
         case other:
             return reduce_expr(zero, plus, other)
 
@@ -510,6 +517,8 @@ def convert_to_intermediate(expr):
             return Continue()
         case Cons(IR1.WHILE_TRUE, Cons(action, Nil())):
             return WhileTrue(action)
+        case Cons(IR1.IF_STMT, Cons(pred, Cons(con, Cons(alt, Nil())))):
+            return IfStmt(pred, con, alt)
         case Cons(hd, tl):
             return Call(hd, tuple(tl))
         case Sym() as sym:
@@ -526,12 +535,10 @@ def fmap_ir(f, expr):
             return Attr(f(obj), attr)
         case Do(stmts, final):
             return Do(tuple(map(f, stmts)), f(final))
-        case DoS(stmts, final):
+        case DoS(stmts):
             return DoS(tuple(map(f, stmts)))
         case IfExpr(pred, con, alt):
             return IfExpr(f(pred), f(con), f(alt))
-        case IfStmt(pred, con, alt):
-            return IfStmt(f(pred), f(con), f(alt))
         case IfStmt(pred, con, alt):
             return IfStmt(f(pred), f(con), f(alt))
         case Fn(n, params, restparam, body):
@@ -546,6 +553,69 @@ def fmap_ir(f, expr):
             return Call(f(hd), tuple(map(f, tl)))
         case _:
             raise NotImplementedError(expr)
+
+
+def reduce_ir(zero, plus, expr):
+    match expr:
+        case Lit() | Quote() | VarE() | Break() | Continue() | Sym():
+            return zero
+        case Attr(obj, _):
+            return obj
+        case Do(stmts, final):
+            return plus(reduce(plus, stmts, zero), final)
+        case DoS(stmts):
+            return reduce(plus, stmts, zero)
+        case IfExpr(pred, con, alt) | IfStmt(pred, con, alt):
+            return plus(plus(pred, con), alt)
+        case Fn(_, _, _, body):
+            return body
+        case Raise(r):
+            return r
+        case SetBang(_, init):
+            return init
+        case WhileTrue(action):
+            return action
+        case Call(proc, args):
+            return plus(proc, reduce(plus, args, zero))
+        case _:
+            raise NotImplementedError(expr)
+
+
+def contains_stmt_alg(expr):
+    "if expr or any subexpression of expr is a statement"
+    match expr:
+        case x if is_stmt(x):
+            return True
+        case other:
+            return reduce_ir(False, operator.or_, other)
+
+
+def convert_if_expr_to_stmt(i=0):
+    def next_temp(prefix=""):
+        nonlocal i
+        i += 1
+        return Sym(None, f'{prefix}__t.{i}')
+
+    contains_stmt = cata_f(fmap_ir)(contains_stmt_alg)
+
+    def alg(expr):
+        match expr:
+            # The sad thing about this is that it's not shortcutting
+            # and that we have already come up from the leafs
+            # I think there are definitely single-pass solutions.
+            # Something to come back to...
+            case IfExpr(pred, con, alt) if contains_stmt(con) or contains_stmt(alt):
+                t = next_temp()
+                # statement hoisting will clean this up
+                return Do((
+                    IfStmt(pred,
+                           con if is_stmt(con) else SetBang(t, con),
+                           alt if is_stmt(alt) else SetBang(t, alt)),
+                ), t)
+            case other:
+                return other
+        assert False
+    return alg
 
 
 def create_hoist_statements(i=0):
@@ -567,7 +637,7 @@ def create_hoist_statements(i=0):
     # (do s... e) <- s +
     # (do e) <- e -> e
     # (if e e1 e2) <- e
-    # (if e s1 s2) <- s
+    # (if-stmt e s1 s2) <- s
     # (fn [...] s) <- e
     # (raise e) <- s
     # (set! n e) <- s
@@ -582,19 +652,9 @@ def create_hoist_statements(i=0):
         i += 1
         return Sym(None, f'{prefix}__t.{i}')
 
-    def reorder_do(exp, reconstruct):
-        # Pulls statements out of expr and puts them on the outside
-        # and then reconstructs expr only containing the nested expr
-        # into the place where it was broken
-        match exp:
-            case Do(stmts, e):
-                return Do(stmts, reconstruct(e))
-            case other:
-                return reconstruct(other)
-
     def commutes(stmt, expr):
         match stmt:
-            case Lit(): return True
+            case DoS(()): return True
         match expr:
             case Sym() | Lit() | VarE() | Quote(): return True
         return False
@@ -605,8 +665,8 @@ def create_hoist_statements(i=0):
             case (_, DoS(())): return stmt1
             case (DoS(ss1), DoS(ss2)): return DoS(ss1 + ss2)
             case (DoS(ss1), stmt2): return DoS(ss1 + (stmt2,))
-            case (ss1, DoS(ss2)): return DoS((ss1,) + stmt2)
-            case (ss1, ss2): return DoS((ss1, stmt2,))
+            case (stmt1, DoS(ss2)): return DoS((stmt1,) + ss2)
+            case (stmt1, stmt2): return DoS((stmt1, stmt2,))
         assert False
 
     def reorder(exps):
@@ -653,15 +713,20 @@ def create_hoist_statements(i=0):
             case Do(stmts, Do(stmts2, e)):
                 return Do(stmts + stmts2, e)
             case IfExpr(pred, con, alt):
+                # We have already ensured that there are no statements in
+                # the arms
                 return reorder_e1(pred, lambda p: IfExpr(p, con, alt))
 
+            case IfStmt(pred, con, alt):
+                return reorder_stmt(Cons(pred, nil), lambda el: IfStmt(el.hd, con, alt))
             case Raise(e):
                 return reorder_stmt(Cons(e, nil), lambda el: Raise(el.hd))
             case SetBang(name, init):
                 return reorder_stmt(Cons(init, nil), lambda el: SetBang(name, el.hd))
 
             case Break() | Continue() | WhileTrue(_):
-                # TODO
+                # I think these are correct, given that they only are
+                # or contain statements
                 return expr
             case VarE() | Quote() | Lit():
                 return expr
@@ -670,8 +735,6 @@ def create_hoist_statements(i=0):
                     proc, *args = expr_list
                     return Call(proc, tuple(args))
                 return reorder_expr(Cons(proc, List.from_iter(args)), reconstruct)
-            case Call(Do() as proc, args):
-                return reorder_do(proc, lambda e: Call(e, args))
             case other:
                 return other
     return hoist_statements_alg
@@ -707,6 +770,8 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
         name = name.replace('*', '_STAR_')
         name = name.replace('/', '_SLASH_')
         name = name.replace('=', '_EQUAL_')
+        name = name.replace('<', '_LESS_')
+        name = name.replace('>', '_GREATER_')
 
         if not name.isidentifier():
             raise NotImplementedError(name)
@@ -756,7 +821,7 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
         assume all subexpressions have already been compiled and then embedded
         into the structure of our AST
 
-        TODO: do , loop, recur, complex if, fn,
+        TODO: fn,
         """
 
         match expr:
@@ -786,8 +851,6 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
                 return f'({consequent}) if ({predicate}) else ({alternative})'
             case Attr(obj, attr):
                 return f'({obj}).{attr.n}'
-            case Raise(raisable):
-                return f'raise__({raisable})'
 
             case Quote(Sym(None, n)):
                 return f'__Sym(None, {str(n)!r})'
@@ -805,11 +868,24 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
                         return mangle_name(str(sym))
                 raise Uncompilable(f'unresolved: {sym}', location_from(sym))
 
-            case SetBang():
-                raise Uncompilable(expr)
             case Call(proc_form, args):
                 joined_args = ', '.join(args)
                 return f'({proc_form})({joined_args})'
+
+            # Statements
+            case IfStmt(pred, con, alt):
+                return ([f'if {pred}:']
+                        + [f'  {line}' for line in con]
+                        + ['else:']
+                        + [f'  {line}' for line in alt])
+            case SetBang(Sym(None, n), init):
+                return [f'{mangle_name(n)} = ({init})']
+            case Raise(raisable):
+                return [f'raise ({raisable})']
+            case DoS(stmts):
+                return reduce(operator.add, stmts, [])
+            case Do(stmts, final):  # this is kinda wrong
+                return reduce(operator.add, stmts, []) + [final]
             case _:
                 raise Uncompilable(expr, location_from(expr))
 
@@ -859,19 +935,34 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
     ]
 
     prog2 = nest_loop_in_body_of_recursive_fn(params, prog1)
-    prog3 = cata_sb(compose(
-        convert_to_intermediate,
-        create_replace_loop_recur_alg(var_id_counter),
-        nest_loop_in_recursive_fn_alg,
-    ))(prog2)
-    after_transforms = prog3
+    # There is some kind of bug when convert_to_intermediate is composed
+    # with the other steps before running
+    prog3 = compose(
+        cata_sb(convert_to_intermediate),
+        cata_sb(compose(
+            create_replace_loop_recur_alg(var_id_counter),
+            nest_loop_in_recursive_fn_alg,
+        )),
+    )(prog2)
+
+    prog4 = cata_f(fmap_ir)(compose(
+        create_hoist_statements(var_id_counter),
+        convert_if_expr_to_stmt(var_id_counter),
+    ))(prog3)
+    after_transforms = prog4
 
     body_lines = []
     try:
         if restparam is not None:
             mn = mangle_name(restparam.n)
             body_lines += [f'{mn} = __List_from_iter({mn})']
-        body_lines += ['return ' + cata_f(fmap_ir)(compile_expr_alg)(after_transforms)]
+        match cata_f(fmap_ir)(compile_expr_alg)(after_transforms):
+            case str(result):
+                body_lines += ['return ' + result]
+            case list(lines) if lines:
+                body_lines += lines
+                body_lines[-1] = 'return ' + body_lines[-1]
+            case _: assert False
         if mode == 'lines':
             return body_lines
         return create_fn(body_lines, resolved_qualifieds)

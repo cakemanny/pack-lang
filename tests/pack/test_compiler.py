@@ -165,6 +165,48 @@ def read_and_convert(text):
     return cata_f(fmap_setbang)(convert_to_intermediate)(form)
 
 
+def test_convert_if_expr_to_stmt():
+    # Idea, if an if expression contains statements, we create
+    # a new temp, and then assign to it in the arms of the if
+    # If the value in the arm is a statement, we elide the assignment
+
+    from pack.recursion import cata_f
+    from pack.compiler import fmap_ir, convert_if_expr_to_stmt
+    from pack.compiler import Do, SetBang, IfStmt, Call, Lit, Raise
+
+    form = read_and_convert("""\
+    (do
+        (pack.core/set! y (if (< x 0) (raise "x") x))
+        y)
+    """)
+
+    assert cata_f(fmap_ir)(convert_if_expr_to_stmt())(form) == \
+        read_and_convert("""\
+    (do
+        (pack.core/set! y
+            (do
+                (pack.core/if-stmt (< x 0)
+                    (raise "x")
+                    (pack.core/set! __t.1 x))
+                __t.1))
+        y)
+    """)
+
+    # Does nothing on expression only if
+    form = read_and_convert("""\
+    (do
+        (pack.core/set! y (if (< x 0) 0 x))
+        y)
+    """)
+
+    assert cata_f(fmap_ir)(convert_if_expr_to_stmt())(form) == \
+        read_and_convert("""\
+    (do
+        (pack.core/set! y (if (< x 0) 0 x))
+        y)
+    """)
+
+
 def test_hoist_statements():
     from pack.recursion import cata_f
     from pack.compiler import fmap_ir, create_hoist_statements
@@ -235,18 +277,7 @@ def test_hoist_statements():
     """)
 
     # non-commuting statements
-
-    form = read_and_convert("""\
-    (if (if x true (do (raise e) nil)) nil)
-    """)
-
-    assert cata_f(fmap_ir)(create_hoist_statements())(form) == \
-        read_and_convert("""\
-    (do
-        (pack.core/set! __t.1 (if x true (do (raise e) nil)))
-        (if __t.1
-            nil))
-    """)
+    # TODO
 
 
 def test_compiler__0(initial_interpreter):

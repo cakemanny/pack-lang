@@ -1,4 +1,9 @@
 
+all: test
+
+.PHONY: mypy
+mypy:
+	mypy pack
 
 .PHONY: test
 test:
