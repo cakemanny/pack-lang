@@ -52,7 +52,7 @@
 (def rest (fn [xs] (. xs tl)))
 
 (def foldl
-  (fn [func accum lst]
+  (fn foldl [func accum lst]
     (if (not lst)
       accum
       (recur func (func accum (first lst)) (rest lst)))))

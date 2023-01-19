@@ -811,9 +811,6 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
             raise NotImplementedError(name)
         return name
 
-    def raise__(e: BaseException):
-        raise e
-
     def create_fn(body_lines, resolved_qualifieds):
         args = ', '.join(
             [mangle_name(sym.n) for sym in params]
@@ -830,7 +827,6 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
             '__List_from_iter': List.from_iter,
             '__Sym': Sym,
             '__Keyword': Keyword,
-            'raise__': raise__
         }
         local_vars = ', '.join(locals.keys())
         txt = f"def __create_fn__({local_vars}):\n{txt}\n return {fn_name}"
@@ -845,8 +841,6 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
         """
         assume all subexpressions have already been compiled and then embedded
         into the structure of our AST
-
-        TODO: fn,
         """
 
         match expr:
@@ -919,12 +913,13 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
                 return [f'raise ({raisable})']
             case Return(e):
                 return [f'return {e}']
-            # case WhileTrue(action_lines):
-            #     return [f'  {line}' for line in action_lines]
-            # case Break():
-            #     return ['break']
-            # case Continue():
-            #     return ['continue']
+            case WhileTrue(action_lines):
+                return ['while True:',
+                        *[f'  {line}' for line in action_lines]]
+            case Break():
+                return ['break']
+            case Continue():
+                return ['continue']
             case DoS(stmts):
                 return reduce(operator.add, stmts, [])
             case Do(stmts, final):  # this is kinda wrong
