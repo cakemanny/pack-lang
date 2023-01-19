@@ -740,6 +740,15 @@ def create_hoist_statements(i=0):
     return hoist_statements_alg
 
 
+def clean_empty_do_expr_alg(expr):
+    """
+    (do e) -> e
+    """
+    match expr:
+        case Do((), e): return e
+        case other: return other
+
+
 # This is in ultra-draft idea mode at the moment
 def compile_fn(fn: InterpFn, interp, *, mode='func'):
     """
@@ -806,15 +815,6 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
         ns = {}
         exec(txt, globals, ns)
         return ns['__create_fn__'](**locals)
-
-    # There will need to be a stage that converts expressions containing
-    # raise, into a statement sequence? or... define a raise_ func
-
-    def compile_statement_alg(expr):
-        match expr:
-            case Cons(IR1.SETBANG, Cons(name, Cons(init, Nil()))):
-                return [f'{name} = {init}']
-        assert False, "TODO"
 
     def compile_expr_alg(expr):
         """
@@ -945,7 +945,9 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
         )),
     )(prog2)
 
-    prog4 = cata_f(fmap_ir)(compose(
+    cata_ir = cata_f(fmap_ir)
+    prog4 = cata_ir(compose(
+        clean_empty_do_expr_alg,
         create_hoist_statements(var_id_counter),
         convert_if_expr_to_stmt(var_id_counter),
     ))(prog3)
@@ -956,7 +958,7 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
         if restparam is not None:
             mn = mangle_name(restparam.n)
             body_lines += [f'{mn} = __List_from_iter({mn})']
-        match cata_f(fmap_ir)(compile_expr_alg)(after_transforms):
+        match cata_ir(compile_expr_alg)(after_transforms):
             case str(result):
                 body_lines += ['return ' + result]
             case list(lines) if lines:

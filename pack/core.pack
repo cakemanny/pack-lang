@@ -3,7 +3,7 @@
 (import operator)
 (import pack.interp)
 
-(def *compile* true)
+(def *compile* false)
 
 (def eval (. pack.interp rt_eval))
 (def apply (. pack.interp rt_apply))

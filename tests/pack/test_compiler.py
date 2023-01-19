@@ -332,6 +332,7 @@ def test_compiler__1(initial_interpreter):
     ('(fn f [] ((. "hi" islower)))', ["return (('hi').islower)()"]),
     ('(fn f [] ((. "hi" index) "i"))', ["return (('hi').index)('i')"]),
     ('(fn f [] (var *compile*))', ["return _STAR_compile_STAR_"]),
+    # xfail: ('(fn f [] (raise "x"))', ["raise ('x')"]),
 ])
 def test_compiler__simple_expressions(
         fn_txt, expected_lines, initial_interpreter
