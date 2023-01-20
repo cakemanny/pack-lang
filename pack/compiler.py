@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from functools import reduce
 from typing import TypeVar, Optional
+import keyword
 import operator
 import traceback
 
@@ -781,13 +782,13 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
     * func -> returns a python function
     * lines -> returns the lines of python that make up the body of the
                function
+    * txt -> returns the full program text
     """
-    import keyword
 
     class Uncompilable(Exception):
         pass
 
-    name = fn.name
+    name = fn.name.n if fn.name else None
     body = fn.body
     params = tuple(fn.params)
     restparam = fn.restparam
@@ -811,7 +812,7 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
             raise NotImplementedError(name)
         return name
 
-    def create_fn(body_lines, resolved_qualifieds):
+    def create_fn(body_lines, resolved_qualifieds, mode):
         args = ', '.join(
             [mangle_name(sym.n) for sym in params]
             + [f'*{mangle_name(sym.n)}' for sym in filter(None, [restparam])]
@@ -821,6 +822,7 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
             name or f'fn_{hash((params, restparam, body)) & ((1 << 63) - 1)}'
         )
 
+        # Note: using fn_name here is equivalent
         txt = f' def {fn_name}({args}):\n{fn_body}'
 
         locals = {mangle_name(sym.n): v for (sym, v) in closure.items()} | {
@@ -834,6 +836,8 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
             mangle_name(str(var.symbol)): var for var in resolved_qualifieds
         }
         ns = {}
+        if mode == 'txt':
+            return txt
         exec(txt, globals, ns)
         return ns['__create_fn__'](**locals)
 
@@ -855,9 +859,7 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
             case Lit(Keyword(ns, n)):
                 return f'__Keyword({str(ns)!r}, {str(n)!r})'
             case Sym(None, n) as sym:
-                if sym == restparam:
-                    return mangle_name(n)
-                if sym in params:
+                if sym == fn.name or sym in params or sym == restparam:
                     return mangle_name(n)
                 if sym in closure:
                     if isinstance(closure[sym], Var):
@@ -1005,7 +1007,7 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
             case _: assert False
         if mode == 'lines':
             return body_lines
-        return create_fn(body_lines, resolved_qualifieds)
+        return create_fn(body_lines, resolved_qualifieds, mode)
     except Uncompilable:
         traceback.print_exc()
         return None

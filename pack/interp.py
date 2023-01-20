@@ -155,6 +155,8 @@ class Fn(pack.ast.Fn):
         if not self.restparam and len(args) != len(self.params):
             raise EvalError('incorrect number of arguments', location_from(args))
         env = self.env
+        if self.name:
+            env = env.assoc(self.name, self)
         for p, arg in zip(self.params, args):
             env = env.assoc(p, arg)
         if self.restparam:
@@ -236,7 +238,7 @@ rt_refer = RTFn(_rt_refer)
 rt_in_ns = RTFn(_rt_in_ns)
 
 
-def extract_closure(body, params, interp, env):
+def extract_closure(body, params, interp, env, name=None):
     """
     We write a bottom up traversal that builds a set of symbols that
     are unresolved. As we encounter them in binding forms, we remove
@@ -272,7 +274,8 @@ def extract_closure(body, params, interp, env):
                                    expr=other)
 
     cata = cata_f(fmap)
-    unresolved_frees = dissoc_all(cata(find_frees_alg)(body), params)
+    bound = params.conj(name) if name else params
+    unresolved_frees = dissoc_all(cata(find_frees_alg)(body), bound)
 
     def resolve(closure, unresolved_free):
         return closure.assoc(
@@ -458,9 +461,9 @@ def eval_expr(form, interp, env):
                     return compiled
             return fn
         case Cons(Sym(None, 'fn'),
-                  Cons(Sym(None, name), Cons(Vec() as params, Cons(body, Nil())))):
-            # TODO: create a var to store the name in?
-            closure = extract_closure(body, params, interp, env)
+                  Cons(Sym(None, _) as name,
+                       Cons(Vec() as params, Cons(body, Nil())))):
+            closure = extract_closure(body, params, interp, env, name=name)
             fn = Fn(name, params, body, closure, interp)
             if interp.compilation_enabled:
                 compiled = compile_fn(fn, interp)

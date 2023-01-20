@@ -490,6 +490,24 @@ def test_compiler__nested_functions(
     assert lines == expected_lines
 
 
+def test_compiler__recursive_function(initial_interpreter):
+    from pack.interp import compile_fn
+
+    text = """\
+    (require 'pack.core)
+    (ns user)
+    (def y (fn f [] (if false (f))))
+    """
+    forms = read_all_forms(text)
+
+    results, interp = expand_and_evaluate_forms(forms, initial_interpreter)
+
+    fn = interp.resolve_symbol(Sym('user', 'y'), ArrayMap.empty()).value
+    lines = compile_fn(fn, interp, mode='lines')
+
+    assert lines == ['return ((f)()) if (False) else (None)']
+
+
 @pytest.mark.parametrize('fn_txt,expected_result', [
     ('((fn f [] [1 2 3 4]))',
      Vec.from_iter((1, 2, 3, 4,))),
