@@ -116,7 +116,7 @@
 ;; Enhance basic forms
 
 (def destructure
-  (fn [bindings]
+  (fn destructure [bindings]
     (if (not (vector? bindings))
       (raise ((. builtins SyntaxError) (str "bindings not vector: " bindings)))
       (if (odd? (count bindings))

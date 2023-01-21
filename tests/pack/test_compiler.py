@@ -159,10 +159,10 @@ def test_replace_loop_recur():
 
 
 def read_and_convert(text):
-    from pack.compiler import fmap_setbang, convert_to_intermediate, cata_f
+    from pack.compiler import fmap_setbang, convert_to_intermediate_alg, cata_f
 
     form = read_all_forms(text)[0]
-    return cata_f(fmap_setbang)(convert_to_intermediate)(form)
+    return cata_f(fmap_setbang)(convert_to_intermediate_alg)(form)
 
 
 def test_convert_if_expr_to_stmt():
@@ -172,7 +172,6 @@ def test_convert_if_expr_to_stmt():
 
     from pack.recursion import cata_f
     from pack.compiler import fmap_ir, convert_if_expr_to_stmt
-    from pack.compiler import Do, SetBang, IfStmt, Call, Lit, Raise
 
     form = read_and_convert("""\
     (do
@@ -426,6 +425,14 @@ def test_compiler__remove_quote():
     form = read_all_forms(text)[0].tl.hd
     assert remove_quote(form) == read_all_forms("(pack.core/list)")[0]
 
+    text = """\
+    '(1 '(1 a))
+    """
+    form = read_all_forms(text)[0].tl.hd
+    assert remove_quote(form) == read_all_forms(
+        "(pack.core/list 1 (pack.core/list 'quote (pack.core/list 1 'a)))"
+    )[0]
+
 
 @pytest.mark.parametrize('fn_txt,expected_lines', [
     ('(fn f [x] (quote [1 a :d]))',
@@ -441,6 +448,7 @@ def test_compiler__quoted_data(
 
     text = f"""\
     (require 'pack.core)
+    (def *compile* false)
     (ns user)
     {fn_txt}
     """
@@ -476,6 +484,7 @@ def test_compiler__nested_functions(
 
     text = f"""\
     (require 'pack.core)
+    (def *compile* false)
     (ns user)
     {fn_txt}
     """
@@ -495,6 +504,7 @@ def test_compiler__recursive_function(initial_interpreter):
 
     text = """\
     (require 'pack.core)
+    (def *compile* false)
     (ns user)
     (def y (fn f [] (if false (f))))
     """

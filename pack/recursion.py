@@ -48,7 +48,20 @@ def cata_f(fmap, unfix=lambda x: x):
     cata alg = alg . fmap (cata alg) . unfix
     """
     def cata(alg):
-        return lambda f: alg(fmap(cata(alg), unfix(f)))
+        return lambda fa: alg(fmap(cata(alg), unfix(fa)))
+    return cata
+
+
+def cata_n(fmap):
+    """
+    finite recursion: recurses at most n levels
+    """
+    def cata(alg, n):
+        def f(a):
+            if n <= 0:
+                return a
+            return alg(fmap(cata(alg, n - 1), a))
+        return f
     return cata
 
 

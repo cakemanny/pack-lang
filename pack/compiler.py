@@ -122,8 +122,6 @@ def remove_quote_alg(datum):
 remove_quote = cata_f(fmap_datum)(compose(remove_vec_and_map_alg, remove_quote_alg))
 
 
-# FIXME: This is running bottom up.
-# broken might be (quote (something (quote something)))
 def remove_complex_quote_alg(expr):
     """
     an algebra to find quoted data within our program and rewrite it
@@ -481,7 +479,7 @@ def is_stmt(expr):
         case _: return False
 
 
-def convert_to_intermediate(expr):
+def convert_to_intermediate_alg(expr):
     match expr:
         case x if x is nil:
             return Lit(nil)
@@ -698,7 +696,7 @@ def create_hoist_statements(i=0):
 
     def reorder_expr(exps, reconstruct):
         stmt, exprs = reorder(exps)
-        if stmt == Lit(None):
+        if stmt == DoS(()):
             return reconstruct(exprs)
         if isinstance(stmt, DoS):
             return Do(stmt.stmts, reconstruct(exprs))
@@ -746,15 +744,6 @@ def create_hoist_statements(i=0):
             case other:
                 return other
     return hoist_statements_alg
-
-
-def clean_empty_do_expr_alg(expr):
-    """
-    (do e) -> e
-    """
-    match expr:
-        case Do((), e): return e
-        case other: return other
 
 
 def place_return_alg(expr):
@@ -975,23 +964,22 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
     ]
 
     prog2 = nest_loop_in_body_of_recursive_fn(params, prog1)
-    # There is some kind of bug when convert_to_intermediate is composed
-    # with the other steps before running
+
     prog3 = compose(
-        cata_sb(convert_to_intermediate),
-        cata_sb(compose(
-            create_replace_loop_recur_alg(var_id_counter),
-            nest_loop_in_recursive_fn_alg,
-        )),
+        cata_sb(convert_to_intermediate_alg),
+        cata_sb(create_replace_loop_recur_alg(var_id_counter)),
+        cata_sb(nest_loop_in_recursive_fn_alg),
     )(prog2)
 
+    # TODO: work out how to efficiently apply the catamorphism
+    # fusion law
     cata_ir = cata_f(fmap_ir)
-    prog4 = cata_ir(compose(
-        place_return_alg,
-        clean_empty_do_expr_alg,
-        create_hoist_statements(var_id_counter),
-        convert_if_expr_to_stmt(var_id_counter),
-    ))(prog3)
+    prog4 = compose(
+        cata_ir(place_return_alg),
+        cata_ir(create_hoist_statements(var_id_counter)),
+        cata_ir(convert_if_expr_to_stmt(var_id_counter)),
+    )(prog3)
+
     after_transforms = place_return_outer(prog4)
 
     body_lines = []
