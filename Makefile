@@ -12,3 +12,8 @@ test:
 .PHONY: lint
 lint:
 	flake8 pack
+
+
+.PHONY: clean
+clean:
+	rm -Rf dist *.egg-info build
