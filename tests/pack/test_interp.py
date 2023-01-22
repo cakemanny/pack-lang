@@ -528,6 +528,8 @@ def test_expand_and_evaluate__quoting(initial_interpreter):
 
 
 def test_expand_and_evaluate__import_nested_fn(initial_interpreter):
+    # I'm not really sure what is being tested in this test.
+    # I think this is an old one from when they were just numbered
     text = """\
     (ns pack.core)
     (import builtins)
@@ -575,6 +577,47 @@ def test_expand_and_evaluate__require(initial_interpreter):
     assert interp.current_ns.name == 'user'
     assert results
     assert results[-2:] == [None, 92]
+
+
+def test_expand_and_evaluate__require__broken_module(initial_interpreter):
+    # It's important that the interpreter continues to run when
+    # a required module breaks, and moreover, it's important that the
+    # namespace doesn't change
+    text1 = """\
+    (ns pack.core)
+    (ns user)
+    """
+    initial_forms = read_all_forms(text1)
+    results, interp = expand_and_evaluate_forms(initial_forms, initial_interpreter)
+
+    text2 = """\
+    (require 'tests.broken-1)
+    """
+    with pytest.raises(EvalError):
+        results, interp = expand_and_evaluate_forms(read_all_forms(text2), interp)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'user'
+    assert 'tests.broken-1' not in interp.namespaces
+
+
+def test_expand_and_evaluate__require__broken_module2(initial_interpreter):
+    text1 = """\
+    (ns pack.core)
+    (ns user)
+    """
+    initial_forms = read_all_forms(text1)
+    results, interp = expand_and_evaluate_forms(initial_forms, initial_interpreter)
+
+    text2 = """\
+    (require 'tests.broken-2)
+    """
+    with pytest.raises(EvalError):
+        results, interp = expand_and_evaluate_forms(read_all_forms(text2), interp)
+
+    assert 'pack.core' in interp.namespaces
+    assert interp.current_ns.name == 'user'
+    assert 'tests.broken-2' not in interp.namespaces
 
 
 def test_expand_and_evaluate__raise(initial_interpreter):
@@ -815,3 +858,20 @@ def test_expand_and_evaluate__refer(initial_interpreter):
         5,
         Var(Sym('example', 'xxx'), 5)
     ]
+
+
+def test_expand_and_evaluate__import__error(initial_interpreter):
+    text1 = """\
+    (ns pack.core)
+    (ns user)
+    """
+    initial_forms = read_all_forms(text1)
+    results, interp = expand_and_evaluate_forms(initial_forms, initial_interpreter)
+
+    text2 = """\
+    (import i_hope_they_dont_add_this_module_to_python)
+    """
+    with pytest.raises(EvalError):
+        expand_and_evaluate_forms(read_all_forms(text2), interp)
+
+    assert interp.current_ns.name == 'user'

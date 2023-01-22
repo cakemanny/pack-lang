@@ -337,13 +337,24 @@ def eval_top_level_form(form, interp):
                 )
             module_path = find_module(name.n)
             saved_namespace_name = interp.current_ns.name
-            interp = load_module(module_path, interp)
-            interp = interp.switch_namespace(saved_namespace_name)
+            try:
+                interp = load_module(module_path, interp)
+            except PackLangError as e:
+                raise EvalError(
+                    f"Failed to load module {name.n}", location_from(form)
+                ) from e
+            finally:
+                interp = interp.switch_namespace(saved_namespace_name)
             return None, interp
 
         case Cons(Sym(None, 'import'), Cons(Sym(None, name) as sym, _)):
             # TODO: check that the name is not already used for something else
-            module = importlib.import_module(name)
+            try:
+                module = importlib.import_module(str(name))
+            except ModuleNotFoundError as e:
+                raise EvalError(
+                    f"No python module named '{name}'", location_from(sym),
+                ) from e
 
             saved_namespace_name = interp.current_ns.name
             interp = interp.switch_namespace('py')
@@ -405,7 +416,10 @@ def eval_expr(form, interp, env):
 
         case Cons(Sym(None, '.'), Cons(obj_expr, Cons(Sym(_, attr), Nil()))):
             obj = eval_expr(obj_expr, interp, env)
-            return getattr(obj, attr)
+            try:
+                return getattr(obj, attr)
+            except AttributeError as e:
+                raise EvalError(str(e), location_from(form)) from e
 
         case Cons(Sym(None, 'do'), exprs):
             for expr in exprs:
@@ -932,6 +946,9 @@ def main():
                     print(repr(result))
             except PackLangError as e:
                 print(repr(e))
+                while hasattr(e, '__cause__') and e.__cause__ is not None:
+                    e = e.__cause__
+                    print(repr(e))
             except Exception:
                 traceback.print_exc()
 

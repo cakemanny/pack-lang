@@ -1,0 +1,3 @@
+(ns tests.broken-2)
+
+(import this_python_module_does_not_exist)

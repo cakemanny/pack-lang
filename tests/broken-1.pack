@@ -1,0 +1,4 @@
+(ns tests.broken-1)
+(import builtins)
+
+(. builtins this_does_not_exist)
