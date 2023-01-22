@@ -357,6 +357,11 @@ class SubVec(Sequence):
         offset_slice = slice(start + self.start, stop + self.start, stride)
         return self.vec._slice(offset_slice)
 
+    def subvec(self, start, end=None):
+        if start < 0 or start > len(self):
+            raise IndexError
+        return self._slice(slice(start, end))
+
     def __len__(self):
         return self.end - self.start
 

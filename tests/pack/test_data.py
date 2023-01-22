@@ -151,6 +151,9 @@ def test_subvec():
     # Callable
     assert v.subvec(2)(2) == 4
 
+    # also has subvec
+    v.subvec(1).subvec(1) == v.subvec(2)
+
 
 def test_subvec__addition():
     # Addable
