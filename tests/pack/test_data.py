@@ -152,7 +152,12 @@ def test_subvec():
     assert v.subvec(2)(2) == 4
 
     # also has subvec
-    v.subvec(1).subvec(1) == v.subvec(2)
+    assert v.subvec(1).subvec(1) == v.subvec(2)
+    assert len(v.subvec(1).subvec(1)) == 4
+    assert len(v.subvec(2)) == 4
+    assert v.subvec(1).subvec(1)(0) == 2
+
+    assert v.subvec(2) != Vec.empty()
 
 
 def test_subvec__addition():
@@ -208,6 +213,11 @@ def test_arraymap_assoc():
     assert ArrayMap.empty().assoc('a', 1).assoc('b', 2) == m
     assert ArrayMap.empty().assoc('b', 2).assoc('a', 1) == m
 
+    m = ArrayMap.empty().assoc('a', Vec.from_iter([1, 2]))
+    assert m['a'] == Vec.from_iter([1, 2])
+    m = m.assoc('a', Vec.empty())
+    assert m['a'] == Vec.from_iter([])
+
 
 def test_arraymap_dissoc():
     m = ArrayMap.from_iter((('a', 1), ('b', 2)))
@@ -242,6 +252,10 @@ def test_hamt():
     assert m3['b'] == 2
     assert len(m3) == 2
     assert set(m3) == {'a', 'b'}
+
+    m4 = Map.empty().assoc('a', Vec.from_iter([1, 2, 3]).subvec(2))
+    m5 = m4.assoc('a', m4['a'].subvec(1))
+    assert m5['a'] == Vec.from_iter([])
 
 
 def test_hamt_dissoc():

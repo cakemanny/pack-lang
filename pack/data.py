@@ -206,6 +206,9 @@ class Vec(Sequence):
     def subvec(self, start, end=None):
         if start < 0 or start > len(self):
             raise IndexError
+        if end is not None:
+            if end < start or end > len(self):
+                raise IndexError
         return self._slice(slice(start, end))
 
     def __iter__(self):
@@ -360,6 +363,9 @@ class SubVec(Sequence):
     def subvec(self, start, end=None):
         if start < 0 or start > len(self):
             raise IndexError
+        if end is not None:
+            if end < start or end > len(self):
+                raise IndexError
         return self._slice(slice(start, end))
 
     def __len__(self):
@@ -373,7 +379,9 @@ class SubVec(Sequence):
     def __eq__(self, other):
         if not isinstance(other, (Vec, SubVec)):
             return NotImplemented
-        for x, y in zip(self, other):
+        if len(other) != len(self):
+            return False
+        for x, y in zip(self, other, strict=True):
             if x != y:
                 return False
         return True

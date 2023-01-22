@@ -400,6 +400,32 @@ def test_expand_and_evaluate__recur__non_tail(initial_interpreter):
     assert 'recur in non-tail' in str(exc_info.value)
 
 
+def test_expand_and_evaluate__loop_recur__incorrect_num_args(initial_interpreter):
+    text = """\
+    (ns pack.core)
+    (import operator)
+    (def = (. operator eq))
+    (def - (. operator sub))
+    (def * (. operator mul))
+    (def zero? (fn [n] (= n 0)))
+    (def dec (fn [n] (- n 1)))
+
+    (def factorial
+      (fn [n]
+        (loop [cnt n acc 1]
+           (if (zero? cnt)
+                acc
+              (recur (dec cnt))))))
+    (factorial 5)
+    """
+    forms = read_all_forms(text)
+
+    with pytest.raises(SemanticError) as exc_info:
+        expand_and_evaluate_forms(forms, initial_interpreter)
+
+    assert "not enough operands given to recur: expected 2, got 1" in str(exc_info.value)
+
+
 def test_expand_and_evaluate__eval(initial_interpreter):
     text = """\
     (ns pack.core)

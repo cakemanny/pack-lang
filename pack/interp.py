@@ -446,8 +446,16 @@ def eval_expr(form, interp, env):
                 try:
                     return eval_expr(body, interp, env)
                 except RecurError as e:
-                    for (binding, _), val in zip(take_pairs(bindings), e.arg_vals):
-                        env = env.assoc(binding, val)
+                    bind_names = bindings[::2]
+                    if len(e.arg_vals) != len(bind_names):
+                        raise SemanticError(
+                            ('not enough operands given to recur: '
+                             f'expected {len(bind_names)}, got {len(e.arg_vals)}: ',
+                             f'{e.form} in {form}'),
+                            e.location
+                        )
+                    for bind_name, val in zip(bind_names, e.arg_vals):
+                        env = env.assoc(bind_name, val)
 
         case Cons(Sym(None, 'recur'), args):
             arg_vals = [
