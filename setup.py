@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-# Updated by a script
+# Updated by a script (in the future maybe)
 VERSION = "0.1.0-dev"
 
 with open('README.md', 'r', encoding='utf-8') as f:
@@ -10,6 +10,11 @@ setup(
     name='pack-lang',
     version=VERSION,
     packages=find_packages(exclude=('tests*',)),
+
+    # https://stackoverflow.com/a/1857436
+    package_data={'pack': ['core.pack', 'repl.pack']},
+    include_package_data=True,
+
     author='Daniel Golding',
     description='Quickly serialize dataclasses to and from JSON',
     long_description=readme,

@@ -2,7 +2,7 @@ import dataclasses
 from collections.abc import Sequence, Mapping, Set
 from dataclasses import dataclass
 from itertools import chain, islice
-from typing import Any, Optional, Collection, Iterable, Iterator
+from typing import Any, Optional, Collection, Iterable, Iterator, Union
 
 from pack.util import take_pairs
 
@@ -162,7 +162,7 @@ class Vec(Sequence):
     """
     A Trie with at most 32 elements in each node
     """
-    xs: tuple[Any | 'Vec', ...]
+    xs: tuple[Union[Any, 'Vec'], ...]  # '|' instead of 'Union', broke on py3.11
     height: int
 
     # A classic sign that this should be split into two different
