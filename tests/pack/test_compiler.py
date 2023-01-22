@@ -170,8 +170,11 @@ def test_convert_if_expr_to_stmt():
     # a new temp, and then assign to it in the arms of the if
     # If the value in the arm is a statement, we elide the assignment
 
-    from pack.recursion import cata_f
-    from pack.compiler import fmap_ir, convert_if_expr_to_stmt
+    from pack.recursion import zygo_f
+    from pack.compiler import fmap_ir, convert_if_expr_to_stmt, contains_stmt_alg
+
+    def run(form):
+        return zygo_f(fmap_ir)(contains_stmt_alg, convert_if_expr_to_stmt())(form)
 
     form = read_and_convert("""\
     (do
@@ -179,8 +182,7 @@ def test_convert_if_expr_to_stmt():
         y)
     """)
 
-    assert cata_f(fmap_ir)(convert_if_expr_to_stmt())(form) == \
-        read_and_convert("""\
+    assert run(form) == read_and_convert("""\
     (do
         (pack.core/set! y
             (do
@@ -198,8 +200,7 @@ def test_convert_if_expr_to_stmt():
         y)
     """)
 
-    assert cata_f(fmap_ir)(convert_if_expr_to_stmt())(form) == \
-        read_and_convert("""\
+    assert run(form) == read_and_convert("""\
     (do
         (pack.core/set! y (if (< x 0) 0 x))
         y)

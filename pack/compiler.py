@@ -9,7 +9,7 @@ from pack.ast import Special, fmap, fmap_datum, reduce_expr, split_params
 from pack.ast import Fn as InterpFn
 from pack.data import Sym, Keyword, Vec, List, Cons, Nil, nil, Map, ArrayMap
 from pack.reader import location_from
-from pack.recursion import cata_f, ana_f, compose
+from pack.recursion import cata_f, ana_f, zygo_f, compose
 from pack.runtime import Var
 from pack.util import take_pairs, untake_pairs
 
@@ -600,15 +600,16 @@ def convert_if_expr_to_stmt(i=0):
         i += 1
         return Sym(None, f'{prefix}__t.{i}')
 
-    contains_stmt = cata_f(fmap_ir)(contains_stmt_alg)
+    fst = lambda pair: pair[0]
 
     def alg(expr):
+        """
+        ExprF[(ExprF, contains_stmt: Bool)] -> ExprF
+        """
         match expr:
-            # The sad thing about this is that it's not shortcutting
-            # and that we have already come up from the leafs
-            # I think there are definitely single-pass solutions.
-            # Something to come back to...
-            case IfExpr(pred, con, alt) if contains_stmt(con) or contains_stmt(alt):
+            # c1 and c2 are whether those arms of the if expression
+            # contain any statements
+            case IfExpr((pred, _), (con, c1), (alt, c2)) if c1 or c2:
                 t = next_temp()
                 # statement hoisting will clean this up
                 return Do((
@@ -617,7 +618,7 @@ def convert_if_expr_to_stmt(i=0):
                            alt if is_stmt(alt) else SetBang(t, alt)),
                 ), t)
             case other:
-                return other
+                return fmap_ir(fst, other)
         assert False
     return alg
 
@@ -977,7 +978,7 @@ def compile_fn(fn: InterpFn, interp, *, mode='func'):
     prog4 = compose(
         cata_ir(place_return_alg),
         cata_ir(create_hoist_statements(var_id_counter)),
-        cata_ir(convert_if_expr_to_stmt(var_id_counter)),
+        zygo_f(fmap_ir)(contains_stmt_alg, convert_if_expr_to_stmt(var_id_counter)),
     )(prog3)
 
     after_transforms = place_return_outer(prog4)

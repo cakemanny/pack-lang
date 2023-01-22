@@ -41,6 +41,14 @@ def fan_in(b_to_d, c_to_d):
     return aux
 
 
+def fan_out(f, g):
+    """
+    (&&&) :: (b -> c) -> (b -> c’) -> b -> (c, c’)
+    (f &&& g) x = (f x, g x)
+    """
+    return lambda x: (f(x), g(x))
+
+
 def cata_f(fmap, unfix=lambda x: x):
     """
     generalised fold-right over any functor. takes the fmap for that functor
@@ -105,6 +113,31 @@ def apo_f(fmap, fix=lambda x: x):
     def apo(coa):
         return lambda a: fix(fmap(fan_in(apo(coa), identity), coa(a)))
     return apo
+
+
+def zygo_f(fmap, unfix=lambda x: x):
+    """
+    zygomorphism: a catamorphism with a helper function
+
+    algZygo :: Functor f =>
+        (f  b     -> b) ->
+        (f (a, b) -> a) ->
+        f (a, b) -> (a, b)
+    algZygo f g = g &&& f . fmap snd
+    zygo :: Functor f =>
+            (f b -> b) -> (f (a, b) -> a) -> Fix f -> a
+    zygo f g = fst . cata (algZygo f g)
+    """
+    cata = cata_f(fmap, unfix)
+    fst = lambda pair: pair[0]
+    snd = lambda pair: pair[1]
+
+    def alg_zygo(f, g):
+        return lambda fab: (g(fab), f(fmap(snd, fab)))
+
+    def zygo(f, g):
+        return lambda fa: fst(cata(alg_zygo(f, g))(fa))
+    return zygo
 
 
 def compose(*fs):
