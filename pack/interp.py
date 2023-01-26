@@ -784,6 +784,7 @@ def fmap_with_def(f, expr):
             return fmap(f, other)
 
 
+# Not Used
 def macroexpand_1(form, interp):
     # We use ana (anamorphism) for a top-down expansion
     # ... actually we use apo (apomorphism), because ana doesn't
@@ -809,6 +810,7 @@ def macroexpand_1(form, interp):
     return apo_f(fmap_datum)(coalgebra)(form), interp
 
 
+# Not Used
 def macroexpand_old(form, interp):
     while True:
         new_form, interp = macroexpand_1(form, interp)
