@@ -73,7 +73,6 @@ user=>
   (to-words (to-lines s))
 )
 
-;; vim:ft=clojure:
 ```
 
 ## Example with Flask
@@ -110,7 +109,5 @@ pip install Flask
   ((. example/app run))
   )
 ; http://127.0.0.1:5000/healthz
-
-;; vim:ft=clojure:
 ```
 
